@@ -125,8 +125,8 @@ module SpMDV
 					end
 				end
 				S_READ_BIAS: begin
-					position_chip_enable <= 1; position_write_enable <= 1;
-					position_address <= count[7:0]; position_data <= raw_input;
+					bias_chip_enable <= 1; bias_write_enable <= 1;
+					bias_address <= count[7:0]; bias_data <= raw_input;
 				end
 			endcase
 			state <= next_state;
