@@ -52,7 +52,7 @@ module SpMDV
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
-		$display("state=%0d next_state=%0d split=%0d count=%0d raw_input=%d w_input_valid=%b", state, next_state, split, count, raw_input, w_input_valid);
+		$display("state=%0d next_state=%0d raw_input=%d w_input_valid=%b raw_data_valid=%b", state, next_state, raw_input, w_input_valid, raw_data_valid);
 		if (rst) begin
 			state <= S_IDLE;
 			split <= 2'd0; count <= 12'd0;  row <= 8'd0; col <= 8'd0; bank <= 2'd0;
@@ -72,7 +72,7 @@ module SpMDV
 						if (split == i) begin
 							weight_chip_enable[i] <= 1; weight_write_enable[i] <= 1;
 							weight_address[i] <= count; weight_data[i] <= raw_input;
-							$display("Read value=%0d", raw_input);
+							$display("Read value=%0X", raw_input);
 						end					
 					end
 					if (count == 12'd4095) begin
@@ -89,7 +89,7 @@ module SpMDV
 						if (split == i) begin
 							position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
 							position_address[i] <= count; position_data[i] <= {bank, raw_input[5:0]};
-							$display("Read position=%0d Bank=%0d Column=%0d", raw_input, bank, {bank, raw_input[5:0]});
+							$display("Read position=%0X Bank=%0d Column=%0d", raw_input, bank, {bank, raw_input[5:0]});
 						end					
 					end
 					if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after bank == 2'd3
