@@ -20,11 +20,11 @@ module SpMDV
 	localparam S_READ_WEIGHT = 24'd1;
 	localparam S_READ_POSITION = 24'd2;
 	localparam S_READ_BIAS = 24'd3;
-	// localparam S_IDLE = 24'd;
-	// localparam S_IDLE = 24'd;
-	// localparam S_IDLE = 24'd;
-	// localparam S_IDLE = 24'd;
-	// localparam S_IDLE = 24'd;
+	localparam S_READ_ELEMENT = 24'd4;
+	localparam S_IDLE = 24'd;
+	localparam S_IDLE = 24'd;
+	localparam S_IDLE = 24'd;
+	localparam S_IDLE = 24'd;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -42,62 +42,39 @@ module SpMDV
 		sram_256x8 _bias(.CLK(clk), .CEN(~bias_chip_enable), .WEN(~bias_write_enable), .A(bias_address), .D(bias_data), .Q(bias_output));
 	endgenerate;
 
-	reg [7:0] row, col;
-	reg [11:0] count; reg[1:0]split;
+	reg [7:0]row, col; reg [1:0] bank;
+	reg [11:0] count; reg [1:0] split;
+	reg [21:0] product; 
 
-	// reg weight0_chip_enable, weight0_write_enable; 
-	// reg [11:0]weight0_address; reg [7:0]weight0_data; wire [7:0]weight0_output; 
-	// sram_4096x8 _weight0(.CLK(clk), .CEN(~weight0_chip_enable), .WEN(~weight0_write_enable), .A(weight0_address), .D(weight0_data), .Q(weight0_output));
-	// reg weight1_chip_enable, weight1_write_enable;
-	// reg [11:0]weight1_address; reg [7:0]weight1_data; wire [7:0]weight1_output; 
-	// sram_4096x8 _weight1(.CLK(clk), .CEN(~weight1_chip_enable), .WEN(~weight1_write_enable), .A(weight1_address), .D(weight1_data), .Q(weight1_output));
-	// reg weight2_chip_enable, weight2_write_enable; 
-	// reg [11:0]weight2_address; reg [7:0]weight2_data;wire [7:0]weight2_output; 
-	// sram_4096x8 _weight2(.CLK(clk), .CEN(~weight2_chip_enable), .WEN(~weight2_write_enable), .A(weight2_address), .D(weight2_data), .Q(weight2_output));
-	// reg position0_chip_enable, position0_write_enable; 
-	// reg [11:0]position0_address; reg [7:0]position0_data; wire [7:0]position0_output; 
-	// sram_4096x8 _position0(.CLK(clk), .CEN(~position0_chip_enable), .WEN(~position0_write_enable), .A(position0_address), .D(position0_data), .Q(position0_output));
-	// reg position1_chip_enable, position1_write_enable; 
-	// reg [11:0]position1_address; reg [7:0]position1_data; wire [7:0]position1_output; 
-	// sram_4096x8 _position1(.CLK(clk), .CEN(~position1_chip_enable), .WEN(~position1_write_enable), .A(position1_address), .D(position1_data), .Q(position1_output));
-	// reg position2_chip_enable, position2_write_enable; 
-	// reg [11:0]position2_address; reg [7:0]position2_data; wire [7:0]position2_output; 
-	// sram_4096x8 _position2(.CLK(clk), .CEN(~position2_chip_enable), .WEN(~position2_write_enable), .A(position2_address), .D(position2_data), .Q(position2_output));
-	// reg bais_chip_enable, bias_write_enable; 
-	// reg [7:0]bias_address; reg [7:0]bias_data; wire [7:0]bias_output; 
-	// sram_256x8 _bias(.CLK(clk), .CEN(~bias_chip_enable), .WEN(~bias_write_enable), .A(bias_address), .D(bias_data), .Q(bias_output))
-	
+
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
 		$display("state=%0d next_state=%0d split=%0d count=%0d raw_input=%d", state, next_state, split, count, raw_input);
 		if (rst) begin
 			state <= S_IDLE;
-			split <= 2'd0; count <= 12'd0;  
+			split <= 2'd0; count <= 12'd0;  row <= 8'd0; col <= 8'd0; bank <= 2'd0;
 		end	else begin
 			case (state) 
 				S_IDLE: begin
-					split <= 2'd0; count <= 12'd0; 
+					split <= 2'd0; count <= 12'd0; row <= 8'b0; col <= 8'd0; bank <= 2'd0;
 				end
 				S_READ_WEIGHT: begin
 					for (i = 0; i < 3; i = i + 1) begin
 						weight_chip_enable[i] <= 0; weight_write_enable[i] <= 0;
 					end
-					for (i = 0; i < 3; i = i + 1) begin
-						if (split == i) begin
-							weight_chip_enable[i] <= 1; weight_write_enable[i] <= 1;
-							weight_address[i] <= count; weight_data[i] <= raw_input;
-						end					
-					end
-					if (count != 12'd4095) begin
-						count <= count + 12'd1; 
-					end else begin
-						count <= 12'd0;
-						if (split != 2'd2) begin
-							split <= split + 2'd1;
-						end else begin				
-							split <= 2'd0;		
+					if (w_input_valid) begin
+						for (i = 0; i < 3; i = i + 1) begin
+							if (split == i) begin
+								weight_chip_enable[i] <= 1; weight_write_enable[i] <= 1;
+								weight_address[i] <= count; weight_data[i] <= raw_input;
+							end					
 						end
+						if (count == 12'd4095) begin
+							if (split != 2'd2) split <= split + 2'd1;
+							else split <= 2'd0;		
+						end
+						count <= count + 12'd1; // cycle back to 12'd0 after count == 12'd4095
 					end
 				end
 				S_READ_POSITION: begin
@@ -107,23 +84,24 @@ module SpMDV
 					for (i = 0; i < 3; i = i + 1) begin
 						if (split == i) begin
 							position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
-							position_address[i] <= count; position_data[i] <= raw_input;
+							position_address[i] <= count; position_data[i] <= {bank, raw_input[5:0]};
 						end					
 					end
-					if (count != 12'd4095) begin
-						count <= count + 12'd1; 
-					end else begin
-						count <= 12'd0;
-						if (split != 2'd2) begin
-							split <= split + 2'd1;
-						end else begin				
-							split <= 2'd0;		
-						end
+					if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after band == 2'd3
+					col <= col + 1; // cycle back to 8'd0 after band == 8'd255
+					if (count == 12'd4095) begin
+						if (split != 2'd2) split <= split + 2'd1;
+						else split <= 2'd0;		
 					end
+					count <= count + 12'd1; // cycle back to 12'd0 after count == 12'd4095
 				end
 				S_READ_BIAS: begin
 					bias_chip_enable <= 1; bias_write_enable <= 1;
-					bias_address <= count[7:0]; bias_data <= raw_input;
+					bias_address <= row; bias_data <= raw_input;
+					row <= row + 8'd1; // cycle back to 8'd0 after band == 8'd255
+				end
+				S_READ_ELEMENT: begin
+					
 				end
 			endcase
 			state <= next_state;
@@ -136,7 +114,7 @@ module SpMDV
 			S_IDLE: if (start_init) next_state = S_READ_WEIGHT;
 			S_READ_WEIGHT: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
 			S_READ_POSITION: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
-			S_READ_BIAS: if (count == 12'd256) next_state = 
+			S_READ_BIAS: if (row == 12'd255) next_state = 
 		endcase
 	end
 	// output logic
@@ -149,7 +127,7 @@ module SpMDV
 			S_READ_WEIGHT: ld_w_request = 1;
 			S_READ_POSITION: ld_w_request = 1;
 			S_READ_BIAS: ld_w_request = 1;
-
+			S_READ_ELEMENT: raw_data_request = 1;
 		endcase
 	end
 
