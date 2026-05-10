@@ -35,12 +35,12 @@ module SpMDV
 	reg [7:0]bias_address; reg [7:0]bias_data; wire [7:0]bias_output; 
 	genvar _;
 	generate
-		for (_ = 0; _ < 3; _ = _ + 1) begin 
+		for (_ = 0; _ < 3; _ = _ + 1) begin : GEN_SRAM
 			sram_4096x8 _weight(.CLK(clk), .CEN(~weight_chip_enable[_]), .WEN(~weight_write_enable[_]), .A(weight_address[_]), .D(weight_data[_]), .Q(weight_output[_]));
 			sram_4096x8 _position(.CLK(clk), .CEN(~position_chip_enable[_]), .WEN(~position_write_enable[_]), .A(position_address[_]), .D(position_data[_]), .Q(position_output[_]));
 		end
-		sram_256x8 _bias(.CLK(clk), .CEN(~bias_chip_enable), .WEN(~bias_write_enable), .A(bias_address), .D(bias_data), .Q(bias_output))
-	endgenerate
+		sram_256x8 _bias(.CLK(clk), .CEN(~bias_chip_enable), .WEN(~bias_write_enable), .A(bias_address), .D(bias_data), .Q(bias_output));
+	endgenerate;
 
 	reg [7:0] row, col;
 	reg [11:0] count; reg[1:0]split;
@@ -70,7 +70,7 @@ module SpMDV
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
-		if (reset) begin
+		if (rst) begin
 			state <= S_IDLE;
 			split <= 2'd0; count <= 12'd0;  
 		end	else begin
@@ -85,7 +85,7 @@ module SpMDV
 					for (i = 0; i < 3; i = i + 1) begin
 						if (split == i) begin
 							weight_chip_enable[i] <= 1; weight_write_enable[i] <= 1;
-							weight_address[i] <= count; wieght_data[i] <= raw_input;
+							weight_address[i] <= count; weight_data[i] <= raw_input;
 						end					
 					end
 					// if (split == 2'd0) begin
