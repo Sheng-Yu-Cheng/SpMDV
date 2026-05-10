@@ -162,7 +162,9 @@ module SpMDV
 				end
 				S_READ_WEIGHT: begin
 					if (w_input_valid) begin
-						global_address = (14'(row) << 5) + (14'(row) << 4) + (14'(bank) << 3) + (14'(bank) << 2) + 14'(group);  // 48 * row + 12 * bank + group
+						global_address = ({6'd0, row}  << 5) + ({6'd0, row}  << 4)
+										+ ({12'd0, bank} << 3) + ({12'd0, bank} << 2)
+										+ {10'd0, group};  // 48 * row + 12 * bank + group
 						for (i = 0; i < 3; i = i + 1) begin
 							if (global_address[13:12] == i[1:0]) begin
 								weight_chip_enable[i] <= 1; 
@@ -192,7 +194,9 @@ module SpMDV
 				end
 				S_READ_POSITION: begin
 					if (w_input_valid) begin
-						global_address = (14'(row) << 5) + (14'(row) << 4) + (14'(bank) << 3) + (14'(bank) << 2) + 14'(group);  // 48 * row + 12 * bank + group
+						global_address = ({6'd0, row}  << 5) + ({6'd0, row}  << 4)
+										+ ({12'd0, bank} << 3) + ({12'd0, bank} << 2)
+										+ {10'd0, group};  // 48 * row + 12 * bank + group
 						for (i = 0; i < 3; i = i + 1) begin
 							if (global_address[13:12] == i[1:0]) begin
 								position_chip_enable[i] <= 1; 
@@ -280,10 +284,9 @@ module SpMDV
 				end
 
 				S_READ_MATRIX_ELEM: begin
-					global_address =
-						(14'(row) << 5) +
-						(14'(row) << 4) +
-						14'(element_count);   // 48*row + element_count
+					global_address = ({6'd0, row} << 5) +
+						({6'd0, row} << 4) +
+						{8'd0, element_count};   // 48*row + element_count
 
 					selected_sram <= global_address[13:12];
 
