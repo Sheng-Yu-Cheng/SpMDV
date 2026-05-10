@@ -41,6 +41,7 @@ module SpMDV
 	localparam S_WAIT_BIAS_FOR_ROW   = 24'd16;
 	localparam S_OUTPUT              = 24'd17;
 	localparam S_CAPTURE_MATRIX_ELEM = 24'd18;
+	localparam S_CAPTURE_BIAS_FOR_ROW = 24'd19;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -453,7 +454,22 @@ module SpMDV
 					bias_chip_enable  <= 1;
 					bias_write_enable <= 0;
 					bias_address      <= row;
-					`ifdef DEBUG
+				end
+
+				S_WAIT_BIAS_FOR_ROW: begin
+					// Intentionally empty:
+					// give synchronous bias SRAM one full cycle to update Q
+				end
+
+				S_CAPTURE_BIAS_FOR_ROW: begin
+					bias_hold <= $signed(bias_output);
+
+					result_hold <= acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000});
+
+					output_row <= row;
+					output_feature <= feature_id;
+
+				`ifdef DEBUG
 					if (feature_id == 4'd0) begin
 						$display("[C%0d][ROW_SUMMARY_F0] row=%0d dot=%0d bias_raw=%0d bias_aligned=%0d result=%0d",
 								dbg_cycle,
@@ -463,28 +479,17 @@ module SpMDV
 								$signed({{10{bias_output[7]}}, bias_output, 4'b0000}),
 								acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000}));
 					end
-					`endif
-				end
 
-				S_WAIT_BIAS_FOR_ROW: begin
-					bias_hold <= $signed(bias_output);
-
-					result_hold <= acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000});
-
-					output_row <= row;
-					output_feature <= feature_id;
-
-					`ifdef DEBUG
-						if ((feature_id == 0 && row < 4) ||
-							(feature_id == 4'd15 && row >= 8'd252)) begin
-							$strobe("[C%0d][BIAS] feature=%0d row=%0d acc=%0d bias_raw=0x%02h(%0d) bias_aligned=%0d result=%0d",
-									dbg_cycle, feature_id, row,
-									acc,
-									bias_output, $signed(bias_output),
-									$signed({{10{bias_output[7]}}, bias_output, 4'b0000}),
-									acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000}));
-						end
-					`endif
+					if ((feature_id == 0 && row < 4) ||
+						(feature_id == 4'd15 && row >= 8'd252)) begin
+						$display("[C%0d][BIAS] feature=%0d row=%0d acc=%0d bias_raw=0x%02h(%0d) bias_aligned=%0d result=%0d",
+								dbg_cycle, feature_id, row,
+								acc,
+								bias_output, $signed(bias_output),
+								$signed({{10{bias_output[7]}}, bias_output, 4'b0000}),
+								acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000}));
+					end
+				`endif
 				end
 
 				S_OUTPUT: begin
@@ -592,6 +597,9 @@ module SpMDV
 				next_state = S_WAIT_BIAS_FOR_ROW;
 
 			S_WAIT_BIAS_FOR_ROW:
+				next_state = S_CAPTURE_BIAS_FOR_ROW;
+
+			S_CAPTURE_BIAS_FOR_ROW:
 				next_state = S_OUTPUT;
 
 			S_OUTPUT:
