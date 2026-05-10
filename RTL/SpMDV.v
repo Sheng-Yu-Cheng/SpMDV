@@ -87,11 +87,11 @@ module SpMDV
 							if (split == i) begin
 								position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
 								position_address[i] <= count; position_data[i] <= {bank, raw_input[5:0]};
-								$display("Read position=%0d Band=%0d Column=%0d", raw_input, band, {bank, raw_input[5:0]});
+								$display("Read position=%0d Bank=%0d Column=%0d", raw_input, bank, {bank, raw_input[5:0]});
 							end					
 						end
-						if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after band == 2'd3
-						col <= col + 1; // cycle back to 8'd0 after band == 8'd255
+						if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after bank == 2'd3
+						col <= col + 1; // cycle back to 8'd0 after bank == 8'd255
 						if (count == 12'd4095) begin
 							if (split != 2'd2) split <= split + 2'd1;
 							else split <= 2'd0;		
@@ -103,7 +103,7 @@ module SpMDV
 					if (w_input_valid) begin
 						bias_chip_enable <= 1; bias_write_enable <= 1;
 						bias_address <= row; bias_data <= raw_input;
-						row <= row + 8'd1; // cycle back to 8'd0 after band == 8'd255
+						row <= row + 8'd1; // cycle back to 8'd0 after bank == 8'd255
 						$display("Read bias=%0d", raw_input);
 					end
 				end
