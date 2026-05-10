@@ -615,7 +615,13 @@ module SpMDV
 			S_LOAD_INIT:         ld_w_request = 1;
 
 			S_START_READ_VECTOR: raw_data_request = 1;
-			S_READ_VECTOR:       raw_data_request = 1;
+			S_READ_VECTOR: begin
+				// When load_feature_id/load_elem_id already point to {15,255},
+				// elem255 is already in-flight in raw_input and will be written
+				// on the next posedge. Do NOT ask TB for one more element.
+				if (!(load_feature_id == 4'd15 && load_elem_id == 8'd255))
+					raw_data_request = 1;
+			end
 		endcase
 	end
 
