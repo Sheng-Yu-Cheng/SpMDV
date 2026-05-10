@@ -1,4 +1,4 @@
-`define DEBUG
+// `define DEBUG
 
 // `define DEBUG_TARGET_FEATURE 4'd0
 // `define DEBUG_TARGET_ROW     8'd0
