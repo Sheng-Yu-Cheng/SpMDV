@@ -1,5 +1,9 @@
 `define DEBUG
 
+`define DEBUG_TARGET_FEATURE 4'd0
+`define DEBUG_TARGET_ROW     8'd0
+`define DEBUG_STOP_AFTER_FIRST_VECTOR
+
 module SpMDV 
 (
 	input clk,
@@ -77,6 +81,15 @@ module SpMDV
 	reg [7:0] output_row;
 	reg [3:0] output_feature;
 
+	reg [7:0]  pos_hold;
+	reg signed [7:0] vec_hold;
+	reg [13:0] term_gaddr_hold;
+	reg [5:0]  term_elem_hold;
+
+	`ifdef DEBUG
+		reg dbg_stop_pending;
+	`endif
+
 	integer i;
 	`ifdef DEBUG
 		integer dbg_cycle;
@@ -98,9 +111,20 @@ module SpMDV
 
 			`ifdef DEBUG
 			dbg_cycle <= 0;
+			dbg_stop_pending <= 1'b0;
 			`endif
 
 		end	else begin
+			`ifdef DEBUG_STOP_AFTER_FIRST_VECTOR
+			`ifdef DEBUG
+				if (dbg_stop_pending) begin
+					$display("============================================================");
+					$display("[C%0d][DEBUG_STOP] Finished outputting feature 0, row 0~255. Stop simulation here.", dbg_cycle);
+					$display("============================================================");
+					$finish;
+				end
+			`endif
+			`endif
 
 			`ifdef DEBUG
 				dbg_cycle <= dbg_cycle + 1;
@@ -156,6 +180,13 @@ module SpMDV
 					result_hold <= 22'sd0;
 					weight_hold <= 8'sd0;
 					bias_hold <= 8'sd0;
+					pos_hold <= 8'd0;
+					vec_hold <= 8'sd0;
+					term_gaddr_hold <= 14'd0;
+					term_elem_hold <= 6'd0;
+
+					output_row <= 8'd0;
+					output_feature <= 4'd0;
 
 					o_result <= 22'd0;
 					o_valid <= 1'b0;
@@ -175,11 +206,11 @@ module SpMDV
 								weight_address[i] <= global_address[11:0];
 								weight_data[i] <= raw_input;
 								`ifdef DEBUG
-								if ((row < 2) || (row == 8'd255 && group >= 4'd10)) begin
-									$display("[C%0d][LOAD_W] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d value=0x%02h",
+								if (row == `DEBUG_TARGET_ROW) begin
+									$display("[C%0d][LOAD_W_TARGET] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d weight_raw=0x%02h signed=%0d",
 											dbg_cycle, row, group, bank,
-											global_address, global_address[13:12],
-											global_address[11:0], raw_input);
+											global_address, global_address[13:12], global_address[11:0],
+											raw_input, $signed(raw_input));
 								end
 								`endif
 							end
@@ -207,11 +238,11 @@ module SpMDV
 								position_address[i] <= global_address[11:0];
 								position_data[i] <= {bank, raw_input[5:0]};
 								`ifdef DEBUG
-								if ((row < 2) || (row == 8'd255 && group >= 4'd10)) begin
-									$display("[C%0d][LOAD_P] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d raw_pos=%0d full_col=%0d",
+								if (row == `DEBUG_TARGET_ROW) begin
+									$display("[C%0d][LOAD_P_TARGET] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d raw_pos=%0d full_col=%0d",
 											dbg_cycle, row, group, bank,
-											global_address, global_address[13:12],
-											global_address[11:0], raw_input[5:0], {bank, raw_input[5:0]});
+											global_address, global_address[13:12], global_address[11:0],
+											raw_input[5:0], {bank, raw_input[5:0]});
 								end
 								`endif
 							end
@@ -313,8 +344,8 @@ module SpMDV
 					end
 
 					`ifdef DEBUG
-					if ((feature_id == 0 && row < 2) ||
-						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
+					if (feature_id == `DEBUG_TARGET_FEATURE &&
+   						row        == `DEBUG_TARGET_ROW) begin
 						$display("[C%0d][MREQ] feature=%0d row=%0d elem=%0d gaddr=%0d sram=%0d laddr=%0d",
 								dbg_cycle, feature_id, row, element_count,
 								global_address, global_address[13:12], global_address[11:0]);
@@ -325,6 +356,9 @@ module SpMDV
 				S_WAIT_MATRIX_ELEM: begin
 					// SRAM Q becomes available here
 					weight_hold <= $signed(weight_output[selected_sram]);
+					pos_hold        <= position_output[selected_sram];
+					term_gaddr_hold <= global_address;
+					term_elem_hold  <= element_count;
 
 					vector_chip_enable  <= 1;
 					vector_write_enable <= 0;
@@ -333,8 +367,8 @@ module SpMDV
 					// position_output gives the column inside that vector
 					vector_address <= {feature_id, position_output[selected_sram]};
 					`ifdef DEBUG
-					if ((feature_id == 0 && row < 2) ||
-						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
+					if (feature_id == `DEBUG_TARGET_FEATURE &&
+    					row        == `DEBUG_TARGET_ROW) begin
 						$strobe("[C%0d][MRET] feature=%0d row=%0d elem=%0d sram=%0d weight=0x%02h(%0d) pos=0x%02h(%0d) -> vector_addr=%0d",
 								dbg_cycle, feature_id, row, element_count,
 								selected_sram,
@@ -353,10 +387,11 @@ module SpMDV
 					mult_product <=
 						$signed({{8{weight_hold[7]}}, weight_hold}) *
 						$signed({{8{vector_output[7]}}, vector_output});
+					vec_hold <= $signed(vector_output);
 
 				`ifdef DEBUG
-					if ((feature_id == 0 && row < 2) ||
-						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
+					if (feature_id == `DEBUG_TARGET_FEATURE &&
+    					row        == `DEBUG_TARGET_ROW) begin
 						$strobe("[C%0d][VRET] feature=%0d row=%0d elem=%0d weight_hold=%0d vector=0x%02h(%0d) product(next)=0x%04h(%0d)",
 								dbg_cycle, feature_id, row, element_count,
 								weight_hold,
@@ -372,13 +407,31 @@ module SpMDV
 				S_MAC: begin
 					acc <= acc + {{6{mult_product[15]}}, mult_product};
 					`ifdef DEBUG
-					if ((feature_id == 0 && row < 2) ||
-						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
+					if (feature_id == `DEBUG_TARGET_FEATURE &&
+    					row        == `DEBUG_TARGET_ROW) begin
 						$display("[C%0d][MAC] feature=%0d row=%0d elem=%0d mult_product=%0d acc_before=%0d acc_after=%0d",
 							dbg_cycle, feature_id, row, element_count,
 							mult_product,
 							acc,
 							acc + {{6{mult_product[15]}}, mult_product});
+					end
+					`endif
+					`ifdef DEBUG
+					if (feature_id == `DEBUG_TARGET_FEATURE &&
+						row        == `DEBUG_TARGET_ROW) begin
+						$display("[C%0d][TERM] feature=%0d row=%0d elem=%0d gaddr=%0d weight=%0d pos=%0d vector_addr=%0d vector=%0d product=%0d acc_before=%0d acc_after=%0d",
+								dbg_cycle,
+								feature_id,
+								row,
+								term_elem_hold,
+								term_gaddr_hold,
+								weight_hold,
+								pos_hold,
+								{feature_id, pos_hold},
+								vec_hold,
+								mult_product,
+								acc,
+								acc + $signed({{6{mult_product[15]}}, mult_product}));
 					end
 					`endif
 					if (element_count != 6'd47)
@@ -389,6 +442,17 @@ module SpMDV
 					bias_chip_enable  <= 1;
 					bias_write_enable <= 0;
 					bias_address      <= row;
+					`ifdef DEBUG
+					if (feature_id == 4'd0) begin
+						$display("[C%0d][ROW_SUMMARY_F0] row=%0d dot=%0d bias_raw=%0d bias_aligned=%0d result=%0d",
+								dbg_cycle,
+								row,
+								acc,
+								$signed(bias_output),
+								$signed({{10{bias_output[7]}}, bias_output, 4'b0000}),
+								acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000}));
+					end
+					`endif
 				end
 
 				S_WAIT_BIAS_FOR_ROW: begin
@@ -415,11 +479,21 @@ module SpMDV
 				S_OUTPUT: begin
 					o_result <= result_hold;
 					o_valid  <= 1;
+
 					`ifdef DEBUG
 					$display("[C%0d][OUT] feature=%0d row=%0d o_result=0x%06h signed=%0d o_valid=1",
 							dbg_cycle, output_feature, output_row,
 							result_hold, $signed(result_hold));
 					`endif
+
+					`ifdef DEBUG_STOP_AFTER_FIRST_VECTOR
+					`ifdef DEBUG
+					if (output_feature == 4'd0 && output_row == 8'd255) begin
+						dbg_stop_pending <= 1'b1;
+					end
+					`endif
+					`endif
+					
 
 					// 下一個 row / 下一個 feature
 					if (row != 8'd255) begin
