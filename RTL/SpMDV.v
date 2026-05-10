@@ -16,15 +16,15 @@ module SpMDV
 	output reg o_valid
 );
 	reg [23:0]state, next_state;
-	localparam S_IDLE = 24'd;
-	localparam S_READ_WEIGHT = 24'd;
-	localparam S_READ_POSITION = 24'd;
-	localparam S_READ_BIAS = 24'd;
-	localparam S_IDLE = 24'd;
-	localparam S_IDLE = 24'd;
-	localparam S_IDLE = 24'd;
-	localparam S_IDLE = 24'd;
-	localparam S_IDLE = 24'd;
+	localparam S_IDLE = 24'd0;
+	localparam S_READ_WEIGHT = 24'd1;
+	localparam S_READ_POSITION = 24'd2;
+	localparam S_READ_BIAS = 24'd3;
+	// localparam S_IDLE = 24'd;
+	// localparam S_IDLE = 24'd;
+	// localparam S_IDLE = 24'd;
+	// localparam S_IDLE = 24'd;
+	// localparam S_IDLE = 24'd;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
