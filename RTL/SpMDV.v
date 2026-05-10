@@ -114,7 +114,7 @@ module SpMDV
 			S_IDLE: if (start_init) next_state = S_READ_WEIGHT;
 			S_READ_WEIGHT: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
 			S_READ_POSITION: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
-			S_READ_BIAS: if (row == 12'd255) next_state = 
+			S_READ_BIAS: if (row == 12'd255) next_state = S_READ_ELEMENT;
 		endcase
 	end
 	// output logic
