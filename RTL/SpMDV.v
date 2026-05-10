@@ -22,26 +22,21 @@ module SpMDV
 	output reg o_valid
 );
 	reg [23:0]state, next_state;
-	localparam S_IDLE                = 24'd0;
-	localparam S_START_READ_WEIGHT   = 24'd1;
-	localparam S_READ_WEIGHT         = 24'd2;
-	localparam S_START_READ_POSITION = 24'd3;
-	localparam S_READ_POSITION       = 24'd4;
-	localparam S_START_READ_BIAS     = 24'd5;
-	localparam S_READ_BIAS           = 24'd6;
-	localparam S_START_READ_VECTOR   = 24'd7;
-	localparam S_READ_VECTOR         = 24'd8;
-	localparam S_COMPUTE_INIT        = 24'd9;
-	localparam S_READ_MATRIX_ELEM    = 24'd10;
-	localparam S_WAIT_MATRIX_ELEM    = 24'd11;
-	localparam S_READ_VECTOR_ELEM    = 24'd12;
-	localparam S_WAIT_VECTOR_ELEM    = 24'd13;
-	localparam S_MAC                 = 24'd14;
-	localparam S_READ_BIAS_FOR_ROW   = 24'd15;
-	localparam S_WAIT_BIAS_FOR_ROW   = 24'd16;
-	localparam S_OUTPUT              = 24'd17;
-	localparam S_CAPTURE_MATRIX_ELEM = 24'd18;
-	localparam S_CAPTURE_BIAS_FOR_ROW = 24'd19;
+	localparam S_IDLE                  = 24'd0;
+	localparam S_LOAD_INIT             = 24'd1;
+	localparam S_START_READ_VECTOR     = 24'd2;
+	localparam S_READ_VECTOR           = 24'd3;
+	localparam S_COMPUTE_INIT          = 24'd4;
+	localparam S_READ_MATRIX_ELEM      = 24'd5;
+	localparam S_WAIT_MATRIX_ELEM      = 24'd6;
+	localparam S_READ_VECTOR_ELEM      = 24'd7;
+	localparam S_WAIT_VECTOR_ELEM      = 24'd8;
+	localparam S_MAC                   = 24'd9;
+	localparam S_READ_BIAS_FOR_ROW     = 24'd10;
+	localparam S_WAIT_BIAS_FOR_ROW     = 24'd11;
+	localparam S_OUTPUT                = 24'd12;
+	localparam S_CAPTURE_MATRIX_ELEM   = 24'd13;
+	localparam S_CAPTURE_BIAS_FOR_ROW  = 24'd14;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -89,6 +84,7 @@ module SpMDV
 	reg signed [7:0] vec_hold;
 	reg [13:0] term_gaddr_hold;
 	reg [5:0]  term_elem_hold;
+	reg [14:0] init_count;
 
 	`ifdef DEBUG
 		reg dbg_stop_pending;
@@ -148,9 +144,11 @@ module SpMDV
 			o_valid <= 1'b0;
 			`ifdef DEBUG
 			// global sparse address should never exceed 12287 during matrix load/compute
-			if ((state == S_READ_WEIGHT || state == S_READ_POSITION || state == S_READ_MATRIX_ELEM) &&
+			if (((state == S_LOAD_INIT && init_count < 15'd24576) ||
+				(state == S_READ_MATRIX_ELEM)) &&
 				global_address > 14'd12287) begin
-				$display("[C%0d][ERROR] global_address overflow: %0d", dbg_cycle, global_address);
+				$display("[C%0d][ERROR] global_address overflow: %0d",
+						dbg_cycle, global_address);
 			end
 
 			// Compute should never select non-existing fourth SRAM
@@ -194,90 +192,107 @@ module SpMDV
 
 					o_result <= 22'd0;
 					o_valid <= 1'b0;
-				end
-				S_START_READ_WEIGHT: begin
-				end
 
-				S_START_READ_POSITION: begin
+					init_count <= 15'd0;
 				end
-
-				S_START_READ_BIAS: begin
-				end
-				S_READ_WEIGHT: begin
+				S_LOAD_INIT: begin
 					if (w_input_valid) begin
-						global_address = ({6'd0, row}  << 5) + ({6'd0, row}  << 4)
+						// ============================================================
+						// 0 ~ 12287 : weight stream
+						// ============================================================
+						if (init_count < 15'd12288) begin
+							global_address = ({6'd0, row} << 5) + ({6'd0, row} << 4)
 										+ ({12'd0, bank} << 3) + ({12'd0, bank} << 2)
-										+ {10'd0, group};  // 48 * row + 12 * bank + group
-						for (i = 0; i < 3; i = i + 1) begin
-							if (global_address[13:12] == i[1:0]) begin
-								weight_chip_enable[i] <= 1; 
-								weight_write_enable[i] <= 1;
-								weight_address[i] <= global_address[11:0];
-								weight_data[i] <= raw_input;
-								`ifdef DEBUG
-								if (row == `DEBUG_TARGET_ROW) begin
-									$display("[C%0d][LOAD_W_TARGET] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d weight_raw=0x%02h signed=%0d",
-											dbg_cycle, row, group, bank,
-											global_address, global_address[13:12], global_address[11:0],
-											raw_input, $signed(raw_input));
+										+ {10'd0, group};  // 48*row + 12*bank + group
+
+							for (i = 0; i < 3; i = i + 1) begin
+								if (global_address[13:12] == i[1:0]) begin
+									weight_chip_enable[i]  <= 1;
+									weight_write_enable[i] <= 1;
+									weight_address[i]      <= global_address[11:0];
+									weight_data[i]         <= raw_input;
+
+				`ifdef DEBUG
+									if (row == `DEBUG_TARGET_ROW) begin
+										$display("[C%0d][LOAD_W_TARGET] init_count=%0d row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d weight_raw=0x%02h signed=%0d",
+												dbg_cycle, init_count, row, group, bank,
+												global_address, global_address[13:12],
+												global_address[11:0],
+												raw_input, $signed(raw_input));
+									end
+				`endif
 								end
-								`endif
 							end
+
+							if (bank == 2'd3) begin
+								if (group != 4'd11) begin
+									group <= group + 4'd1;
+								end else begin
+									group <= 4'd0;
+									row   <= row + 8'd1;
+								end
+							end
+							bank <= bank + 2'd1;
 						end
 
-						if (bank == 2'd3) begin
-							if (group != 4'd11) group <= group + 4'd1;
-							else begin 
-								group <= 4'd0;
-								row <= row + 8'd1;
-							end
-						end
-						bank <= bank + 2'd1; // cycle back to 2'd0 after bank == 2'd3
-					end
-				end
-				S_READ_POSITION: begin
-					if (w_input_valid) begin
-						global_address = ({6'd0, row}  << 5) + ({6'd0, row}  << 4)
+						// ============================================================
+						// 12288 ~ 24575 : position stream
+						// ============================================================
+						else if (init_count < 15'd24576) begin
+							global_address = ({6'd0, row} << 5) + ({6'd0, row} << 4)
 										+ ({12'd0, bank} << 3) + ({12'd0, bank} << 2)
-										+ {10'd0, group};  // 48 * row + 12 * bank + group
-						for (i = 0; i < 3; i = i + 1) begin
-							if (global_address[13:12] == i[1:0]) begin
-								position_chip_enable[i] <= 1; 
-								position_write_enable[i] <= 1;
-								position_address[i] <= global_address[11:0];
-								position_data[i] <= {bank, raw_input[5:0]};
-								`ifdef DEBUG
-								if (row == `DEBUG_TARGET_ROW) begin
-									$display("[C%0d][LOAD_P_TARGET] row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d raw_pos=%0d full_col=%0d",
-											dbg_cycle, row, group, bank,
-											global_address, global_address[13:12], global_address[11:0],
-											raw_input[5:0], {bank, raw_input[5:0]});
+										+ {10'd0, group};  // 48*row + 12*bank + group
+
+							for (i = 0; i < 3; i = i + 1) begin
+								if (global_address[13:12] == i[1:0]) begin
+									position_chip_enable[i]  <= 1;
+									position_write_enable[i] <= 1;
+									position_address[i]      <= global_address[11:0];
+									position_data[i]         <= {bank, raw_input[5:0]};
+
+				`ifdef DEBUG
+									if (row == `DEBUG_TARGET_ROW) begin
+										$display("[C%0d][LOAD_P_TARGET] init_count=%0d row=%0d group=%0d bank=%0d gaddr=%0d sram=%0d laddr=%0d raw_pos=%0d full_col=%0d",
+												dbg_cycle, init_count, row, group, bank,
+												global_address, global_address[13:12],
+												global_address[11:0],
+												raw_input[5:0], {bank, raw_input[5:0]});
+									end
+				`endif
 								end
-								`endif
 							end
-						end
-						
-						if (bank == 2'd3) begin
-							if (group != 4'd11) group <= group + 4'd1;
-							else begin 
-								group <= 4'd0;
-								row <= row + 8'd1;
+
+							if (bank == 2'd3) begin
+								if (group != 4'd11) begin
+									group <= group + 4'd1;
+								end else begin
+									group <= 4'd0;
+									row   <= row + 8'd1;
+								end
 							end
+							bank <= bank + 2'd1;
 						end
-						bank <= bank + 2'd1; // cycle back to 2'd0 after bank == 2'd3
-					end
-				end
-				S_READ_BIAS: begin
-					if (w_input_valid) begin
-						bias_chip_enable <= 1; bias_write_enable <= 1;
-						bias_address <= row; bias_data <= raw_input;
-						row <= row + 8'd1; // cycle back to 8'd0 after bank == 8'd255
-						`ifdef DEBUG
-						if ((row < 4) || (row >= 8'd252)) begin
-							$display("[C%0d][LOAD_B] row=%0d bias_raw=0x%02h signed=%0d",
-									dbg_cycle, row, raw_input, $signed(raw_input));
+
+						// ============================================================
+						// 24576 ~ 24831 : bias stream
+						// ============================================================
+						else begin
+							bias_chip_enable  <= 1;
+							bias_write_enable <= 1;
+							bias_address      <= row;
+							bias_data         <= raw_input;
+
+				`ifdef DEBUG
+							if ((row < 4) || (row >= 8'd252)) begin
+								$display("[C%0d][LOAD_B] init_count=%0d row=%0d bias_raw=0x%02h signed=%0d",
+										dbg_cycle, init_count, row, raw_input, $signed(raw_input));
+							end
+				`endif
+
+							row <= row + 8'd1;
 						end
-						`endif
+
+						init_count <= init_count + 15'd1;
 					end
 				end
 				S_START_READ_VECTOR: begin
@@ -534,29 +549,11 @@ module SpMDV
 		next_state = state;
 		case (state)
 			S_IDLE:
-				if (start_init) next_state = S_START_READ_WEIGHT;
+				if (start_init)
+					next_state = S_LOAD_INIT;
 
-			S_START_READ_WEIGHT:
-				next_state = S_READ_WEIGHT;
-
-			S_READ_WEIGHT:
-				if (w_input_valid &&
-					row == 8'd255 && bank == 2'd3 && group == 4'd11)
-					next_state = S_START_READ_POSITION;
-
-			S_START_READ_POSITION:
-				next_state = S_READ_POSITION;
-
-			S_READ_POSITION:
-				if (w_input_valid &&
-					row == 8'd255 && bank == 2'd3 && group == 4'd11)
-					next_state = S_START_READ_BIAS;
-
-			S_START_READ_BIAS:
-				next_state = S_READ_BIAS;
-
-			S_READ_BIAS:
-				if (w_input_valid && row == 8'd255)
+			S_LOAD_INIT:
+				if (w_input_valid && init_count == 15'd24831)
 					next_state = S_START_READ_VECTOR;
 
 			S_START_READ_VECTOR:
@@ -615,12 +612,7 @@ module SpMDV
 		ld_w_request = 0;
 
 		case (state)
-			S_START_READ_WEIGHT:   ld_w_request = 1;
-			S_READ_WEIGHT:         ld_w_request = 1;
-
-			S_READ_POSITION:       ld_w_request = 1;
-
-			S_READ_BIAS:           ld_w_request = 1;
+			S_LOAD_INIT:         ld_w_request = 1;
 
 			S_START_READ_VECTOR: raw_data_request = 1;
 			S_READ_VECTOR:       raw_data_request = 1;
