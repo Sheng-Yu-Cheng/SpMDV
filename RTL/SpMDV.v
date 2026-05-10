@@ -23,6 +23,7 @@ module SpMDV
 	localparam S_READ_BIAS = 24'd4;
 	localparam S_START_READ_ELEMENT = 24'd5;
 	localparam S_READ_ELEMENT = 24'd6;
+	localparam S_CALC = 24'd7;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -44,6 +45,7 @@ module SpMDV
 	reg [11:0] count; reg [1:0] split;
 
 	reg [8:0] element;
+	reg [8:0] progress[255:0][11:0];
 
 	reg [21:0] product; 
 
@@ -126,6 +128,7 @@ module SpMDV
 			S_READ_POSITION: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
 			S_READ_BIAS: if (row == 12'd255) next_state = S_START_READ_ELEMENT;
 			S_START_READ_ELEMENT: next_state = S_READ_ELEMENT;
+			S_READ_ELEMENT: next_state = S_CALC
 		endcase
 	end
 	// output logic
