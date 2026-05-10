@@ -73,11 +73,14 @@ module SpMDV
 	reg [7:0] load_elem_id;
 
 	reg [1:0] selected_sram;
+	
+	reg [7:0] output_row;
+	reg [3:0] output_feature;
 
 	integer i;
-`ifdef DEBUG
-	integer dbg_cycle;
-`endif
+	`ifdef DEBUG
+		integer dbg_cycle;
+	`endif
 	// state logic
 	always @(posedge clk or posedge rst) begin
 
@@ -381,34 +384,36 @@ module SpMDV
 					bias_chip_enable  <= 1;
 					bias_write_enable <= 0;
 					bias_address      <= row;
-					`ifdef DEBUG
-					if ((feature_id == 0 && row < 4) ||
-						(feature_id == 4'd15 && row >= 8'd252)) begin
-						$strobe("[C%0d][BIAS] feature=%0d row=%0d acc=%0d bias_raw=0x%02h(%0d) bias_aligned=%0d result=%0d",
-								dbg_cycle, feature_id, row,
-								acc,
-								bias_output, $signed(bias_output),
-								{{10{bias_output[7]}}, bias_output, 4'b0000},
-								acc + {{10{bias_output[7]}}, bias_output, 4'b0000});
-					end
-					`endif
 				end
 
 				S_WAIT_BIAS_FOR_ROW: begin
 					bias_hold <= $signed(bias_output);
 
-					// bias is S0.7, accumulator is S10.11
-					// shift bias left by 4 to align fractional bits
-					result_hold <= acc + {{10{bias_output[7]}}, bias_output, 4'b0000};
+					result_hold <= acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000});
+
+					output_row <= row;
+					output_feature <= feature_id;
+
+					`ifdef DEBUG
+						if ((feature_id == 0 && row < 4) ||
+							(feature_id == 4'd15 && row >= 8'd252)) begin
+							$strobe("[C%0d][BIAS] feature=%0d row=%0d acc=%0d bias_raw=0x%02h(%0d) bias_aligned=%0d result=%0d",
+									dbg_cycle, feature_id, row,
+									acc,
+									bias_output, $signed(bias_output),
+									$signed({{10{bias_output[7]}}, bias_output, 4'b0000}),
+									acc + $signed({{10{bias_output[7]}}, bias_output, 4'b0000}));
+						end
+					`endif
 				end
 
 				S_OUTPUT: begin
 					o_result <= result_hold;
 					o_valid  <= 1;
 					`ifdef DEBUG
-					$strobe("[C%0d][OUT] feature=%0d row=%0d o_result=0x%06h signed=%0d o_valid=%b",
-							dbg_cycle, feature_id, row,
-							result_hold, $signed(result_hold), 1'b1);
+					$display("[C%0d][OUT] feature=%0d row=%0d o_result=0x%06h signed=%0d o_valid=1",
+							dbg_cycle, output_feature, output_row,
+							result_hold, $signed(result_hold));
 					`endif
 
 					// 下一個 row / 下一個 feature
