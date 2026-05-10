@@ -2,7 +2,7 @@
 // `timescale 1ns/1ns
 `define CYCLE       20.0     // CLK period.
 `define HCYCLE      (`CYCLE/2)
-`define MAX_CYCLE   2400000
+`define MAX_CYCLE   3000000
 `define RST_DELAY   2
 
 `define ld_mi 4'd0
@@ -332,7 +332,6 @@ task load_weight_task;
     input [3:0] load_type;
 
 begin
-    $display("[TB_TASK_START t=%0t] load_type=%0d data_len=%0d", $time, load_type, data_len);
     // w_input_valid_w = 0;
     l_i = 0;
     w_addr = 0;
@@ -341,11 +340,6 @@ begin
         @(negedge clk);
         w_input_valid_w = 0;
         if (ld_w_request) begin
-            if ((load_type == `ld_bias_value && l_i < 5) ||
-                (load_type == `ld_weight_index && l_i >= data_len-3)) begin
-                $display("[TB_SEND t=%0t] load_type=%0d l_i=%0d w_addr=%0d sent=%02h ld_w_request=%b",
-                        $time, load_type, l_i, w_addr, weight_input, ld_w_request);
-            end
             w_input_valid_w = 1;
             current_weight = weight_mem[w_addr];
             case(load_type)
@@ -367,7 +361,6 @@ begin
     end
     @(posedge clk);
     w_input_valid_w = 1;
-    $display("[TB_TASK_END t=%0t] load_type=%0d l_i=%0d w_addr=%0d", $time, load_type, l_i, w_addr);
 end
 endtask
 
@@ -379,33 +372,4 @@ task task_reset; begin
     reset = 0;    
 end endtask
 
-always @(negedge clk) begin
-    if ($time > 490000 && $time < 498000) begin
-        $display("[TB_NEG  t=%0t] dut_state=%0d ld_w_request=%b w_input_valid_w=%b w_input_valid=%b weight_input=%02h raw_input_sel=%02h raw_input=%02h",
-                 $time,
-                 u_SpMDV.state,
-                 ld_w_request,
-                 w_input_valid_w,
-                 w_input_valid,
-                 weight_input,
-                 raw_input_sel,
-                 raw_input);
-    end
-end
-
-always @(posedge clk) begin
-    if ($time > 490000 && $time < 498000) begin
-        $strobe("[TB_POS  t=%0t] dut_state=%0d ld_w_request=%b w_input_valid_w=%b w_input_valid=%b weight_input=%02h raw_input_sel=%02h raw_input=%02h",
-                $time,
-                u_SpMDV.state,
-                ld_w_request,
-                w_input_valid_w,
-                w_input_valid,
-                weight_input,
-                raw_input_sel,
-                raw_input);
-    end
-end
-
 endmodule
-
