@@ -73,7 +73,7 @@ module SpMDV
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
-		$display("state=%0d next_state=%0d split=%0d count=%0d", state, next_state, split, count);
+		$display("state=%0d next_state=%0d split=%0d count=%0d raw_input=%d", state, next_state, split, count, raw_input);
 		if (rst) begin
 			state <= S_IDLE;
 			split <= 2'd0; count <= 12'd0;  
@@ -96,10 +96,14 @@ module SpMDV
 						count <= count + 12'd1; 
 					end else begin
 						count <= 12'd0;
-						split <= split + 2'd1;
+						if (split != 2'd2) begin
+							split <= split + 2'd1;
+						end else begin				
+							split <= 2'd0;		
+						end
 					end
 				end
-				S_READ_WEIGHT: begin
+				S_READ_POSITION: begin
 					for (i = 0; i < 3; i = i + 1) begin
 						position_chip_enable[i] <= 0; position_write_enable[i] <= 0;
 					end
@@ -113,8 +117,16 @@ module SpMDV
 						count <= count + 12'd1; 
 					end else begin
 						count <= 12'd0;
-						split <= split + 2'd1;
+						if (split != 2'd2) begin
+							split <= split + 2'd1;
+						end else begin				
+							split <= 2'd0;		
+						end
 					end
+				end
+				S_READ_BIAS: begin
+					position_chip_enable <= 1; position_write_enable <= 1;
+					position_address <= count[7:0]; position_data <= raw_input;
 				end
 			endcase
 			state <= next_state;
@@ -138,6 +150,7 @@ module SpMDV
 		case (state)
 			S_READ_WEIGHT: ld_w_request = 1;
 			S_READ_POSITION: ld_w_request = 1;
+			S_READ_BIAS: ld_w_request = 1;
 
 		endcase
 	end
