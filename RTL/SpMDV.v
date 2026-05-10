@@ -22,8 +22,7 @@ module SpMDV
 	localparam S_READ_POSITION = 24'd3;
 	localparam S_READ_BIAS = 24'd4;
 	localparam S_START_READ_ELEMENT = 24'd5;
-	localparam S_WAIT_ELEMENT = 24'd6;
-	localparam S_READ_ELEMENT = 24'd7;
+	localparam S_READ_ELEMENT = 24'd6;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -109,12 +108,9 @@ module SpMDV
 				S_START_READ_ELEMENT: begin
 					
 				end
-				S_WAIT_ELEMENT: begin
-					
-				end
 				S_READ_ELEMENT: begin
 					element <= raw_input;
-					$display("Read element=%0d", element);
+					$display("Read element=%0d", raw_input);
 				end
 			endcase
 			state <= next_state;
@@ -129,8 +125,7 @@ module SpMDV
 			S_READ_WEIGHT: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
 			S_READ_POSITION: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
 			S_READ_BIAS: if (row == 12'd255) next_state = S_START_READ_ELEMENT;
-			S_START_READ_ELEMENT: next_state = S_WAIT_ELEMENT;
-			S_WAIT_ELEMENT: next_state = S_READ_ELEMENT;
+			S_START_READ_ELEMENT: next_state = S_READ_ELEMENT;
 		endcase
 	end
 	// output logic
