@@ -28,10 +28,10 @@ module SpMDV
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
-	reg [11:0]weight_address[2:0]; reg [11:0]weight_data[2:0]; reg [11:0]weight_output[2:0];
+	reg [11:0]weight_address[2:0]; reg [7:0]weight_data[2:0]; wire [7:0]weight_output[2:0];
 	reg position_chip_enable[2:0]; reg position_write_enable[2:0]; 
-	reg [11:0]position_address[2:0]; reg [11:0]position_data[2:0]; reg [11:0]position_output[2:0];
-	reg bais_chip_enable, bias_write_enable; 
+	reg [11:0]position_address[2:0]; reg [7:0]position_data[2:0]; wire [7:0]position_output[2:0];
+	reg bias_chip_enable, bias_write_enable; 
 	reg [7:0]bias_address; reg [7:0]bias_data; wire [7:0]bias_output; 
 	genvar _;
 	generate
