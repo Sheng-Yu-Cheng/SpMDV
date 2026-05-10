@@ -17,8 +17,11 @@ module SpMDV
 );
 	reg [23:0]state, next_state;
 	localparam S_IDLE = 24'd0;
+	// localparam S_READ_WEIGHT_START = 24'd;
 	localparam S_READ_WEIGHT = 24'd1;
+	// localparam S_READ_POSITION_START = 24'd;
 	localparam S_READ_POSITION = 24'd2;
+	// localparam S_READ_BIAS_START = 24'd;
 	localparam S_READ_BIAS = 24'd3;
 	// localparam S_IDLE = 24'd;
 	// localparam S_IDLE = 24'd;
@@ -70,6 +73,7 @@ module SpMDV
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
+		$display("state=%0d next_state=%0d split=%0d count=%0d", state, next_state, split, count);
 		if (rst) begin
 			state <= S_IDLE;
 			split <= 2'd0; count <= 12'd0;  
@@ -88,14 +92,23 @@ module SpMDV
 							weight_address[i] <= count; weight_data[i] <= raw_input;
 						end					
 					end
-					// if (split == 2'd0) begin
-					// 	weight0_chip_enable <= 1; weight0_write_enable <= 1;
-					// 	weight0_address <= count; weight0_data <= 
-					// end else if (split == 2'd1) begin
-						
-					// end else begin
-						
-					// end
+					if (count != 12'd4095) begin
+						count <= count + 12'd1; 
+					end else begin
+						count <= 12'd0;
+						split <= split + 2'd1;
+					end
+				end
+				S_READ_WEIGHT: begin
+					for (i = 0; i < 3; i = i + 1) begin
+						position_chip_enable[i] <= 0; position_write_enable[i] <= 0;
+					end
+					for (i = 0; i < 3; i = i + 1) begin
+						if (split == i) begin
+							position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
+							position_address[i] <= count; position_data[i] <= raw_input;
+						end					
+					end
 					if (count != 12'd4095) begin
 						count <= count + 12'd1; 
 					end else begin
@@ -113,6 +126,7 @@ module SpMDV
 		case (state)
 			S_IDLE: if (start_init) next_state = S_READ_WEIGHT;
 			S_READ_WEIGHT: if (state == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
+			S_READ_POSITION: if (state == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
 		endcase
 	end
 	// output logic
@@ -123,6 +137,7 @@ module SpMDV
 		o_valid = 0;
 		case (state)
 			S_READ_WEIGHT: ld_w_request = 1;
+			S_READ_POSITION: ld_w_request = 1;
 
 		endcase
 	end
