@@ -143,7 +143,6 @@ module SpMDV
                     row <= 8'd0;
                     bank <= 2'd0;
                     group <= 4'd0;
-                    global_address <= 14'd0;
 
                     feature_id <= 4'd0;
                     load_feature_id <= 4'd0;
