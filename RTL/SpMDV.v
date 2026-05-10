@@ -50,7 +50,7 @@ module SpMDV
 	integer i;
 	// state logic
 	always @(posedge clk or posedge rst) begin
-		$display("state=%0d next_state=%0d split=%0d count=%0d raw_input=%d", state, next_state, split, count, raw_input);
+		$display("state=%0d next_state=%0d split=%0d count=%0d raw_input=%d w_input_valid=%b", state, next_state, split, count, raw_input, w_input_valid);
 		if (rst) begin
 			state <= S_IDLE;
 			split <= 2'd0; count <= 12'd0;  row <= 8'd0; col <= 8'd0; bank <= 2'd0;
