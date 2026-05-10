@@ -361,21 +361,24 @@ module SpMDV
 				end
 
 				S_WAIT_MATRIX_ELEM: begin
-					// SRAM Q becomes available here
-					weight_hold <= $signed(weight_output[selected_sram]);
+					// Intentionally empty:
+					// give synchronous SRAM one full cycle to update Q
+				end
+
+				S_CAPTURE_MATRIX_ELEM: begin
+					// SRAM Q is valid now
+					weight_hold     <= $signed(weight_output[selected_sram]);
 					pos_hold        <= position_output[selected_sram];
 					term_gaddr_hold <= global_address;
 					term_elem_hold  <= element_count;
 
 					vector_chip_enable  <= 1;
 					vector_write_enable <= 0;
-
-					// feature_id chooses which of the 16 vectors,
-					// position_output gives the column inside that vector
 					vector_address <= {feature_id, position_output[selected_sram]};
-					`ifdef DEBUG
+
+				`ifdef DEBUG
 					if (feature_id == `DEBUG_TARGET_FEATURE &&
-    					row        == `DEBUG_TARGET_ROW) begin
+						row        == `DEBUG_TARGET_ROW) begin
 						$strobe("[C%0d][MRET] feature=%0d row=%0d elem=%0d sram=%0d weight=0x%02h(%0d) pos=0x%02h(%0d) -> vector_addr=%0d",
 								dbg_cycle, feature_id, row, element_count,
 								selected_sram,
@@ -383,7 +386,7 @@ module SpMDV
 								position_output[selected_sram], position_output[selected_sram],
 								{feature_id, position_output[selected_sram]});
 					end
-					`endif
+				`endif
 				end
 
 				S_READ_VECTOR_ELEM: begin
@@ -567,6 +570,9 @@ module SpMDV
 				next_state = S_WAIT_MATRIX_ELEM;
 
 			S_WAIT_MATRIX_ELEM:
+				next_state = S_CAPTURE_MATRIX_ELEM;
+
+			S_CAPTURE_MATRIX_ELEM:
 				next_state = S_READ_VECTOR_ELEM;
 
 			S_READ_VECTOR_ELEM:
@@ -608,7 +614,7 @@ module SpMDV
 
 			S_START_READ_BIAS:     ld_w_request = 1;
 			S_READ_BIAS:           ld_w_request = 1;
-			
+
 			S_START_READ_VECTOR: raw_data_request = 1;
 			S_READ_VECTOR:       raw_data_request = 1;
 		endcase
