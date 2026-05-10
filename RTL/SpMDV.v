@@ -40,6 +40,7 @@ module SpMDV
 	localparam S_READ_BIAS_FOR_ROW   = 24'd15;
 	localparam S_WAIT_BIAS_FOR_ROW   = 24'd16;
 	localparam S_OUTPUT              = 24'd17;
+	localparam S_CAPTURE_MATRIX_ELEM = 24'd18;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
