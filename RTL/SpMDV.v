@@ -68,6 +68,7 @@ module SpMDV
 							if (split == i) begin
 								weight_chip_enable[i] <= 1; weight_write_enable[i] <= 1;
 								weight_address[i] <= count; weight_data[i] <= raw_input;
+								$display("Read value=%0d", raw_input);
 							end					
 						end
 						if (count == 12'd4095) begin
@@ -81,24 +82,30 @@ module SpMDV
 					for (i = 0; i < 3; i = i + 1) begin
 						position_chip_enable[i] <= 0; position_write_enable[i] <= 0;
 					end
-					for (i = 0; i < 3; i = i + 1) begin
-						if (split == i) begin
-							position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
-							position_address[i] <= count; position_data[i] <= {bank, raw_input[5:0]};
-						end					
+					if (w_input_valid) begin
+						for (i = 0; i < 3; i = i + 1) begin
+							if (split == i) begin
+								position_chip_enable[i] <= 1; position_write_enable[i] <= 1;
+								position_address[i] <= count; position_data[i] <= {bank, raw_input[5:0]};
+								$display("Read position=%0d Band=%0d Column=%0d", raw_input, band, {bank, raw_input[5:0]});
+							end					
+						end
+						if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after band == 2'd3
+						col <= col + 1; // cycle back to 8'd0 after band == 8'd255
+						if (count == 12'd4095) begin
+							if (split != 2'd2) split <= split + 2'd1;
+							else split <= 2'd0;		
+						end
+						count <= count + 12'd1; // cycle back to 12'd0 after count == 12'd4095
 					end
-					if (col == 8'd255) bank <= bank + 2'd1; // cycle back to 2'd0 after band == 2'd3
-					col <= col + 1; // cycle back to 8'd0 after band == 8'd255
-					if (count == 12'd4095) begin
-						if (split != 2'd2) split <= split + 2'd1;
-						else split <= 2'd0;		
-					end
-					count <= count + 12'd1; // cycle back to 12'd0 after count == 12'd4095
 				end
 				S_READ_BIAS: begin
-					bias_chip_enable <= 1; bias_write_enable <= 1;
-					bias_address <= row; bias_data <= raw_input;
-					row <= row + 8'd1; // cycle back to 8'd0 after band == 8'd255
+					if (w_input_valid) begin
+						bias_chip_enable <= 1; bias_write_enable <= 1;
+						bias_address <= row; bias_data <= raw_input;
+						row <= row + 8'd1; // cycle back to 8'd0 after band == 8'd255
+						$display("Read bias=%0d", raw_input);
+					end
 				end
 				S_READ_ELEMENT: begin
 					
