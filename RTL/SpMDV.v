@@ -350,18 +350,23 @@ module SpMDV
 				end
 
 				S_WAIT_VECTOR_ELEM: begin
-					mult_product <= $signed(weight_hold) * $signed(vector_output);
-					`ifdef DEBUG
+					mult_product <=
+						$signed({{8{weight_hold[7]}}, weight_hold}) *
+						$signed({{8{vector_output[7]}}, vector_output});
+
+				`ifdef DEBUG
 					if ((feature_id == 0 && row < 2) ||
 						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
 						$strobe("[C%0d][VRET] feature=%0d row=%0d elem=%0d weight_hold=%0d vector=0x%02h(%0d) product(next)=0x%04h(%0d)",
 								dbg_cycle, feature_id, row, element_count,
 								weight_hold,
 								vector_output, $signed(vector_output),
-								$signed(weight_hold) * $signed(vector_output),
-								$signed(weight_hold) * $signed(vector_output));
+								$signed({{8{weight_hold[7]}}, weight_hold}) *
+								$signed({{8{vector_output[7]}}, vector_output}),
+								$signed({{8{weight_hold[7]}}, weight_hold}) *
+								$signed({{8{vector_output[7]}}, vector_output}));
 					end
-					`endif
+				`endif
 				end
 
 				S_MAC: begin
@@ -369,11 +374,11 @@ module SpMDV
 					`ifdef DEBUG
 					if ((feature_id == 0 && row < 2) ||
 						(feature_id == 4'd15 && row == 8'd255 && element_count >= 6'd44)) begin
-						$strobe("[C%0d][MAC] feature=%0d row=%0d elem=%0d mult_product=%0d acc_before=%0d acc_after=%0d",
-								dbg_cycle, feature_id, row, element_count,
-								mult_product,
-								acc,
-								acc + {{6{mult_product[15]}}, mult_product});
+						$display("[C%0d][MAC] feature=%0d row=%0d elem=%0d mult_product=%0d acc_before=%0d acc_after=%0d",
+							dbg_cycle, feature_id, row, element_count,
+							mult_product,
+							acc,
+							acc + {{6{mult_product[15]}}, mult_product});
 					end
 					`endif
 					if (element_count != 6'd47)
