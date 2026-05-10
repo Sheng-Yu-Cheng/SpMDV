@@ -22,22 +22,24 @@ module SpMDV
 	output reg o_valid
 );
 	reg [23:0]state, next_state;
-	localparam S_IDLE = 24'd0;
-	localparam S_START_READ = 24'd1;
-	localparam S_READ_WEIGHT = 24'd2;
-	localparam S_READ_POSITION = 24'd3;
-	localparam S_READ_BIAS = 24'd4;
-	localparam S_START_READ_VECTOR = 24'd5;
-	localparam S_READ_VECTOR = 24'd6;
-	localparam S_COMPUTE_INIT       = 24'd7;
-	localparam S_READ_MATRIX_ELEM   = 24'd8;
-	localparam S_WAIT_MATRIX_ELEM   = 24'd9;
-	localparam S_READ_VECTOR_ELEM   = 24'd10;
-	localparam S_WAIT_VECTOR_ELEM   = 24'd11;
-	localparam S_MAC                 = 24'd12;
-	localparam S_READ_BIAS_FOR_ROW   = 24'd13;
-	localparam S_WAIT_BIAS_FOR_ROW   = 24'd14;
-	localparam S_OUTPUT              = 24'd15;
+	localparam S_IDLE                = 24'd0;
+	localparam S_START_READ_WEIGHT   = 24'd1;
+	localparam S_READ_WEIGHT         = 24'd2;
+	localparam S_START_READ_POSITION = 24'd3;
+	localparam S_READ_POSITION       = 24'd4;
+	localparam S_START_READ_BIAS     = 24'd5;
+	localparam S_READ_BIAS           = 24'd6;
+	localparam S_START_READ_VECTOR   = 24'd7;
+	localparam S_READ_VECTOR         = 24'd8;
+	localparam S_COMPUTE_INIT        = 24'd9;
+	localparam S_READ_MATRIX_ELEM    = 24'd10;
+	localparam S_WAIT_MATRIX_ELEM    = 24'd11;
+	localparam S_READ_VECTOR_ELEM    = 24'd12;
+	localparam S_WAIT_VECTOR_ELEM    = 24'd13;
+	localparam S_MAC                 = 24'd14;
+	localparam S_READ_BIAS_FOR_ROW   = 24'd15;
+	localparam S_WAIT_BIAS_FOR_ROW   = 24'd16;
+	localparam S_OUTPUT              = 24'd17;
 
 
 	reg weight_chip_enable[2:0]; reg weight_write_enable[2:0]; 
@@ -191,8 +193,13 @@ module SpMDV
 					o_result <= 22'd0;
 					o_valid <= 1'b0;
 				end
-				S_START_READ: begin
-				
+				S_START_READ_WEIGHT: begin
+				end
+
+				S_START_READ_POSITION: begin
+				end
+
+				S_START_READ_BIAS: begin
 				end
 				S_READ_WEIGHT: begin
 					if (w_input_valid) begin
@@ -518,21 +525,29 @@ module SpMDV
 		next_state = state;
 		case (state)
 			S_IDLE:
-				if (start_init) next_state = S_START_READ;
+				if (start_init) next_state = S_START_READ_WEIGHT;
 
-			S_START_READ:
+			S_START_READ_WEIGHT:
 				next_state = S_READ_WEIGHT;
 
 			S_READ_WEIGHT:
-				if (row == 8'd255 && bank == 2'd3 && group == 4'd11)
-					next_state = S_READ_POSITION;
+				if (w_input_valid &&
+					row == 8'd255 && bank == 2'd3 && group == 4'd11)
+					next_state = S_START_READ_POSITION;
+
+			S_START_READ_POSITION:
+				next_state = S_READ_POSITION;
 
 			S_READ_POSITION:
-				if (row == 8'd255 && bank == 2'd3 && group == 4'd11)
-					next_state = S_READ_BIAS;
+				if (w_input_valid &&
+					row == 8'd255 && bank == 2'd3 && group == 4'd11)
+					next_state = S_START_READ_BIAS;
+
+			S_START_READ_BIAS:
+				next_state = S_READ_BIAS;
 
 			S_READ_BIAS:
-				if (row == 8'd255)
+				if (w_input_valid && row == 8'd255)
 					next_state = S_START_READ_VECTOR;
 
 			S_START_READ_VECTOR:
@@ -585,11 +600,15 @@ module SpMDV
 		ld_w_request = 0;
 
 		case (state)
-			S_START_READ:        ld_w_request = 1;
-			S_READ_WEIGHT:       ld_w_request = 1;
-			S_READ_POSITION:     ld_w_request = 1;
-			S_READ_BIAS:         ld_w_request = 1;
+			S_START_READ_WEIGHT:   ld_w_request = 1;
+			S_READ_WEIGHT:         ld_w_request = 1;
 
+			S_START_READ_POSITION: ld_w_request = 1;
+			S_READ_POSITION:       ld_w_request = 1;
+
+			S_START_READ_BIAS:     ld_w_request = 1;
+			S_READ_BIAS:           ld_w_request = 1;
+			
 			S_START_READ_VECTOR: raw_data_request = 1;
 			S_READ_VECTOR:       raw_data_request = 1;
 		endcase
