@@ -17,11 +17,8 @@ module SpMDV
 );
 	reg [23:0]state, next_state;
 	localparam S_IDLE = 24'd0;
-	// localparam S_READ_WEIGHT_START = 24'd;
 	localparam S_READ_WEIGHT = 24'd1;
-	// localparam S_READ_POSITION_START = 24'd;
 	localparam S_READ_POSITION = 24'd2;
-	// localparam S_READ_BIAS_START = 24'd;
 	localparam S_READ_BIAS = 24'd3;
 	// localparam S_IDLE = 24'd;
 	// localparam S_IDLE = 24'd;
@@ -137,8 +134,9 @@ module SpMDV
 		next_state = state;
 		case (state)
 			S_IDLE: if (start_init) next_state = S_READ_WEIGHT;
-			S_READ_WEIGHT: if (state == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
-			S_READ_POSITION: if (state == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
+			S_READ_WEIGHT: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_POSITION;
+			S_READ_POSITION: if (split == 2'd2 && count == 12'd4095) next_state = S_READ_BIAS;
+			S_READ_BIAS: if (count == 12'd256) next_state = 
 		endcase
 	end
 	// output logic
