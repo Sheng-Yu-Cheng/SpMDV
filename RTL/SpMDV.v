@@ -618,10 +618,8 @@ module SpMDV
 			S_START_READ_WEIGHT:   ld_w_request = 1;
 			S_READ_WEIGHT:         ld_w_request = 1;
 
-			S_START_READ_POSITION: ld_w_request = 1;
 			S_READ_POSITION:       ld_w_request = 1;
 
-			S_START_READ_BIAS:     ld_w_request = 1;
 			S_READ_BIAS:           ld_w_request = 1;
 
 			S_START_READ_VECTOR: raw_data_request = 1;
