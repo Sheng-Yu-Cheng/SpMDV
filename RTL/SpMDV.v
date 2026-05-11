@@ -23,16 +23,11 @@ module SpMDV
     localparam S_START_READ_VECTOR     = 24'd2;
     localparam S_READ_VECTOR           = 24'd3;
     localparam S_COMPUTE_INIT          = 24'd4;
-    localparam S_READ_MATRIX_ELEM      = 24'd5;
-    localparam S_WAIT_MATRIX_ELEM      = 24'd6;
-    localparam S_READ_VECTOR_ELEM      = 24'd7;
-    localparam S_WAIT_VECTOR_ELEM      = 24'd8;
-    localparam S_MAC                   = 24'd9;
-    localparam S_READ_BIAS_FOR_ROW     = 24'd10;
-    localparam S_WAIT_BIAS_FOR_ROW     = 24'd11;
-    localparam S_OUTPUT                = 24'd12;
-    localparam S_CAPTURE_MATRIX_ELEM   = 24'd13;
-    localparam S_CAPTURE_BIAS_FOR_ROW  = 24'd14;
+    localparam S_COMPUTE_ROW           = 24'd5;
+    localparam S_READ_BIAS_FOR_ROW     = 24'd6;
+    localparam S_WAIT_BIAS_FOR_ROW     = 24'd7;
+    localparam S_CAPTURE_BIAS_FOR_ROW  = 24'd8;
+    localparam S_OUTPUT                = 24'd9;
 
     // SRAM signals
     reg weight_chip_enable[2:0];
@@ -117,6 +112,26 @@ module SpMDV
     reg [1:0] selected_sram;
     reg [14:0] init_count;         // 0 ~ 24831
 
+    // Pipelined 1-MAC compute control.
+    // The SRAM models used in this project need one bubble cycle after a read
+    // request before Q is valid.  Therefore both the matrix SRAM read and the
+    // vector SRAM read use 2-deep valid/metadata pipelines.
+    reg [5:0] issue_count;         // issued matrix elements, 0 ~ 48
+    reg [5:0] mac_count;           // accumulated products, 0 ~ 48
+
+    reg       mat_valid_1;
+    reg       mat_valid_2;
+    reg [1:0] mat_sram_1;
+    reg [1:0] mat_sram_2;
+
+    reg       vec_valid_1;
+    reg       vec_valid_2;
+    reg signed [7:0] vec_weight_1;
+    reg signed [7:0] vec_weight_2;
+
+    reg       prod_valid;
+    reg signed [15:0] product_pipe;
+
     integer i;
 
     // Sequential logic
@@ -153,6 +168,19 @@ module SpMDV
                     acc <= 22'sd0;
                     result_hold <= 22'sd0;
                     weight_hold <= 8'sd0;
+
+                    issue_count <= 6'd0;
+                    mac_count   <= 6'd0;
+                    mat_valid_1 <= 1'b0;
+                    mat_valid_2 <= 1'b0;
+                    mat_sram_1  <= 2'd0;
+                    mat_sram_2  <= 2'd0;
+                    vec_valid_1 <= 1'b0;
+                    vec_valid_2 <= 1'b0;
+                    vec_weight_1 <= 8'sd0;
+                    vec_weight_2 <= 8'sd0;
+                    prod_valid  <= 1'b0;
+                    product_pipe <= 16'sd0;
 
                     o_result <= 22'd0;
                     o_valid <= 1'b0;
@@ -255,60 +283,105 @@ module SpMDV
                 end
 
                 S_COMPUTE_INIT: begin
-                    row           <= 8'd0;
-                    feature_id    <= 4'd0;
+                    // This state is intentionally one cycle.  It clears all
+                    // pipeline valids before starting a new output row.
                     element_count <= 6'd0;
+                    issue_count   <= 6'd0;
+                    mac_count     <= 6'd0;
                     acc           <= 22'sd0;
+
+                    mat_valid_1   <= 1'b0;
+                    mat_valid_2   <= 1'b0;
+                    mat_sram_1    <= 2'd0;
+                    mat_sram_2    <= 2'd0;
+
+                    vec_valid_1   <= 1'b0;
+                    vec_valid_2   <= 1'b0;
+                    vec_weight_1  <= 8'sd0;
+                    vec_weight_2  <= 8'sd0;
+
+                    prod_valid    <= 1'b0;
+                    product_pipe  <= 16'sd0;
+                    mult_product  <= 16'sd0;
                 end
 
-                S_READ_MATRIX_ELEM: begin
-                    global_address =
-                        ({6'd0, row} << 5) +
-                        ({6'd0, row} << 4) +
-                        {8'd0, element_count};
-
-                    selected_sram <= global_address[13:12];
-
-                    for (i = 0; i < 3; i = i + 1) begin
-                        if (global_address[13:12] == i[1:0]) begin
-                            weight_chip_enable[i]   <= 1;
-                            weight_write_enable[i]  <= 0;
-                            weight_address[i]       <= global_address[11:0];
-
-                            position_chip_enable[i] <= 1;
-                            position_write_enable[i] <= 0;
-                            position_address[i]     <= global_address[11:0];
-                        end
+                S_COMPUTE_ROW: begin
+                    // =====================================================
+                    // Stage 4: accumulate the registered product.
+                    // The last product is accumulated on the same edge that
+                    // leaves S_COMPUTE_ROW for S_READ_BIAS_FOR_ROW.
+                    // =====================================================
+                    if (prod_valid) begin
+                        acc       <= acc + {{6{product_pipe[15]}}, product_pipe};
+                        mac_count <= mac_count + 6'd1;
                     end
-                end
 
-                S_WAIT_MATRIX_ELEM: begin
-                    // Wait one cycle for synchronous SRAM read
-                end
+                    // =====================================================
+                    // Stage 3: vector SRAM Q is valid after one bubble cycle.
+                    // Register the multiplier output to avoid putting
+                    // multiplier + adder in the same cycle.
+                    // =====================================================
+                    prod_valid <= vec_valid_2;
+                    if (vec_valid_2) begin
+                        product_pipe <=
+                            $signed({{8{vec_weight_2[7]}}, vec_weight_2}) *
+                            $signed({{8{vector_output[7]}}, vector_output});
+                    end
 
-                S_CAPTURE_MATRIX_ELEM: begin
-                    weight_hold <= $signed(weight_output[selected_sram]);
+                    // =====================================================
+                    // Stage 2: matrix SRAM Q is valid after one bubble cycle.
+                    // Use the position to issue the vector SRAM read.
+                    // =====================================================
+                    vec_valid_2  <= vec_valid_1;
+                    vec_weight_2 <= vec_weight_1;
 
-                    vector_chip_enable  <= 1;
-                    vector_write_enable <= 0;
-                    vector_address <= {feature_id, position_output[selected_sram]};
-                end
+                    vec_valid_1 <= mat_valid_2;
+                    if (mat_valid_2) begin
+                        vec_weight_1 <= $signed(weight_output[mat_sram_2]);
 
-                S_READ_VECTOR_ELEM: begin
-                    // Wait one cycle for synchronous SRAM read
-                end
+                        vector_chip_enable  <= 1'b1;
+                        vector_write_enable <= 1'b0;
+                        vector_address      <= {feature_id, position_output[mat_sram_2]};
+                    end
 
-                S_WAIT_VECTOR_ELEM: begin
-                    mult_product <=
-                        $signed({{8{weight_hold[7]}}, weight_hold}) *
-                        $signed({{8{vector_output[7]}}, vector_output});
-                end
+                    // =====================================================
+                    // Stage 1: shift the matrix-read pipeline.
+                    // mat_valid_2 is the valid that will be captured next
+                    // cycle, i.e. one bubble cycle after the SRAM read issue.
+                    // =====================================================
+                    mat_valid_2 <= mat_valid_1;
+                    mat_sram_2  <= mat_sram_1;
 
-                S_MAC: begin
-                    acc <= acc + {{6{mult_product[15]}}, mult_product};
+                    // =====================================================
+                    // Stage 0: issue one matrix weight/position SRAM read.
+                    // This can run every cycle until all 48 NZV are issued.
+                    // =====================================================
+                    if (issue_count < 6'd48) begin
+                        global_address =
+                            ({6'd0, row} << 5) +
+                            ({6'd0, row} << 4) +
+                            {8'd0, issue_count};
 
-                    if (element_count != 6'd47)
-                        element_count <= element_count + 6'd1;
+                        selected_sram <= global_address[13:12];
+                        mat_valid_1   <= 1'b1;
+                        mat_sram_1    <= global_address[13:12];
+                        issue_count   <= issue_count + 6'd1;
+                        element_count <= issue_count;
+
+                        for (i = 0; i < 3; i = i + 1) begin
+                            if (global_address[13:12] == i[1:0]) begin
+                                weight_chip_enable[i]    <= 1'b1;
+                                weight_write_enable[i]   <= 1'b0;
+                                weight_address[i]        <= global_address[11:0];
+
+                                position_chip_enable[i]  <= 1'b1;
+                                position_write_enable[i] <= 1'b0;
+                                position_address[i]      <= global_address[11:0];
+                            end
+                        end
+                    end else begin
+                        mat_valid_1 <= 1'b0;
+                    end
                 end
 
                 S_READ_BIAS_FOR_ROW: begin
@@ -372,28 +445,13 @@ module SpMDV
                     next_state = S_COMPUTE_INIT;
 
             S_COMPUTE_INIT:
-                next_state = S_READ_MATRIX_ELEM;
+                next_state = S_COMPUTE_ROW;
 
-            S_READ_MATRIX_ELEM:
-                next_state = S_WAIT_MATRIX_ELEM;
-
-            S_WAIT_MATRIX_ELEM:
-                next_state = S_CAPTURE_MATRIX_ELEM;
-
-            S_CAPTURE_MATRIX_ELEM:
-                next_state = S_READ_VECTOR_ELEM;
-
-            S_READ_VECTOR_ELEM:
-                next_state = S_WAIT_VECTOR_ELEM;
-
-            S_WAIT_VECTOR_ELEM:
-                next_state = S_MAC;
-
-            S_MAC:
-                if (element_count == 6'd47)
+            S_COMPUTE_ROW:
+                if (prod_valid && mac_count == 6'd47)
                     next_state = S_READ_BIAS_FOR_ROW;
                 else
-                    next_state = S_READ_MATRIX_ELEM;
+                    next_state = S_COMPUTE_ROW;
 
             S_READ_BIAS_FOR_ROW:
                 next_state = S_WAIT_BIAS_FOR_ROW;
@@ -408,7 +466,7 @@ module SpMDV
                 if (row == 8'd255 && feature_id == 4'd15)
                     next_state = S_START_READ_VECTOR;
                 else
-                    next_state = S_READ_MATRIX_ELEM;
+                    next_state = S_COMPUTE_INIT;
         endcase
     end
 
