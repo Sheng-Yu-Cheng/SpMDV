@@ -31,7 +31,8 @@ history keep 100
 alias h history
 
 # Add you design here if necessary, Line 34 is ../RTL/SpMDV.v 
-read_file -format verilog  "../RTL/$DESIGN.v"
+# read_file -format verilog  "../RTL/$DESIGN.v"
+read_file -format verilog  "../RTL/sram_256x8.v"
 
 current_design [get_designs $DESIGN]
 link
