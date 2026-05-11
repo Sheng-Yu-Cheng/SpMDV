@@ -262,6 +262,16 @@ module SpMDV
                 end
 
                 S_START_READ_VECTOR: begin
+                    // A new batch of 16 dense vectors is going to overwrite
+                    // the vector SRAM addresses {feature, element}.
+                    // Reset compute indices here.  S_COMPUTE_INIT is now used
+                    // before every row, so feature_id must NOT be reset there;
+                    // otherwise every row would recompute feature 0.  But when
+                    // the previous 16 features are finished and the testbench
+                    // sends the next 16 dense vectors, we must restart from
+                    // token/feature 0 for this new vector batch.
+                    row             <= 8'd0;
+                    feature_id      <= 4'd0;
                     load_feature_id <= 4'd0;
                     load_elem_id    <= 8'd0;
                 end
