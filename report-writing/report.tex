@@ -1,0 +1,531 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+
+\IfFontExistsTF{Noto Serif CJK TC}{\setCJKmainfont{Noto Serif CJK TC}}{%
+\IfFontExistsTF{Source Han Serif TC}{\setCJKmainfont{Source Han Serif TC}}{%
+\IfFontExistsTF{PingFang TC}{\setCJKmainfont{PingFang TC}}{}}}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    urlcolor=blue!60!black,
+    citecolor=blue!60!black
+}
+
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible,
+    backgroundcolor=\color{gray!5}
+}
+
+\title{SpMDV Sparse Matrix--Dense Vector Multiplication\\Architecture Exploration Report}
+\author{P. Cheng}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report summarizes the design exploration for a sparse matrix--dense vector multiplication (SpMDV) accelerator. The target computation is a bank-balanced sparse matrix multiplied by dense vector batches. The main architectural knobs are matrix-bank parallelism and dense-vector feature parallelism. We derive a cycle and area model, describe the implemented 64-MAC architecture, explain the practical optimizations, and summarize current synthesis and simulation results. The current 64-MAC design reduces area-time product (AT) compared with the 1-MAC reference, but the improvement is limited by SRAM banking overhead and output pipeline overhead. The next recommended experiments are a 32-MAC design and optimized 64-MAC variants.
+\end{abstract}
+
+\section{Problem Statement}
+
+The target module implements sparse matrix--dense vector multiplication:
+\begin{equation}
+    y = Wx + b.
+\end{equation}
+
+The matrix $W$ is a $256 \times 256$ sparse matrix stored using Bank-Balanced Sparsity (BBS). Each matrix row is partitioned into four column banks. Each bank contains 12 non-zero values per row. Therefore, each row contains
+\begin{equation}
+    K = 4 \times 12 = 48
+\end{equation}
+non-zero values.
+
+The testbench repeatedly provides batches of dense vectors. In the current task setting, each batch contains 16 dense vectors, and the full testbench contains two such batches, for a total of 32 dense vectors. The dense vector dimension is 256.
+
+\subsection{Data Formats}
+
+The fixed-point formats must remain unchanged across all architectures:
+
+\begin{table}[H]
+\centering
+\caption{Fixed-point format requirement.}
+\begin{tabular}{lll}
+\toprule
+Data & Width & Format \\
+\midrule
+Weight & 8-bit signed & $S2.5$ \\
+Dense vector & 8-bit signed & $S1.6$ \\
+Product & 16-bit signed & $S4.11$ \\
+Bias & 8-bit signed & $S0.7$ \\
+Output & 22-bit signed & $S10.11$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The product format is preserved as
+\begin{equation}
+    S2.5 \times S1.6 = S4.11.
+\end{equation}
+Bias is converted into output format by sign extension and appending four fractional zeros:
+\begin{equation}
+    b_{S10.11} = \text{sign\_extend}(b_{S0.7}) \ll 4.
+\end{equation}
+In Verilog-style notation:
+\begin{lstlisting}[language=Verilog]
+bias_to_s10_11 = $signed({{10{bias_byte[7]}}, bias_byte, 4'b0000});
+\end{lstlisting}
+
+\subsection{Input Protocol}
+
+The external input protocol is fixed and should not be changed.
+
+\paragraph{Matrix initialization stream.}
+The testbench sends initialization data through \texttt{raw\_input[7:0]} with \texttt{w\_input\_valid}:
+\begin{enumerate}[nosep]
+    \item all weight values: $256 \times 48 = 12288$ bytes,
+    \item all position values: $256 \times 48 = 12288$ bytes,
+    \item all bias values: $256$ bytes.
+\end{enumerate}
+The total initialization stream is
+\begin{equation}
+    12288 + 12288 + 256 = 24832 \text{ bytes}.
+\end{equation}
+
+For weight and position, the stream order is row, group, bank:
+\begin{equation}
+    (r,g,b) = (0,0,0), (0,0,1), (0,0,2), (0,0,3), (0,1,0), \ldots.
+\end{equation}
+
+\paragraph{Dense vector stream.}
+Each batch contains 16 dense vectors, provided in feature-major order:
+\begin{equation}
+    x_0[0..255], x_1[0..255], \ldots, x_{15}[0..255].
+\end{equation}
+Thus each batch requires
+\begin{equation}
+    16 \times 256 = 4096
+\end{equation}
+cycles of vector loading when the input bandwidth is one byte per cycle.
+
+\paragraph{Output order.}
+The output is expected in feature-major order:
+\begin{equation}
+    y_0[0..255], y_1[0..255], \ldots, y_{15}[0..255].
+\end{equation}
+This output order is a major reason why a result buffer is required for row-stationary parallel computation.
+
+\section{Theory Model Building}
+
+\subsection{Fixed Problem Parameters}
+
+We define the following fixed parameters:
+\begin{align*}
+    R &= 256 && \text{number of rows},\\
+    C &= 256 && \text{dense vector length},\\
+    B &= 4   && \text{BBS matrix banks},\\
+    G &= 12  && \text{non-zero groups per bank per row},\\
+    F &= 16  && \text{dense vectors per batch}.
+\end{align*}
+
+Each row has
+\begin{equation}
+    K = B G = 48
+\end{equation}
+non-zero values. The total number of scalar multiply operations per 16-vector batch is
+\begin{equation}
+    N_{\mathrm{MAC}} = R F B G = 256 \cdot 16 \cdot 4 \cdot 12 = 196608.
+\end{equation}
+
+\subsection{Parallelism Parameters}
+
+The two architectural knobs are:
+\begin{align*}
+    p &= \text{number of matrix banks processed per cycle},\\
+    n &= \text{number of dense vector features processed per cycle}.
+\end{align*}
+
+The number of physical MAC lanes is
+\begin{equation}
+    m = p n.
+\end{equation}
+
+The most useful design line is usually to first maximize matrix-bank parallelism, because BBS naturally provides four independent banks. Therefore, the primary exploration points are:
+\begin{equation}
+    (p,n) \in \{(1,1), (4,4), (4,8), (4,16)\},
+\end{equation}
+corresponding to 1-MAC, 16-MAC, 32-MAC, and 64-MAC.
+
+\subsection{Compute Cycle Model}
+
+A row contains $G$ groups. For each group, there are $B$ matrix banks and $F$ dense-vector features. If we process $p$ banks and $n$ features per issue, the ideal compute cycles per batch are
+\begin{equation}
+    T_{\mathrm{compute}}(p,n)
+    = R G \left\lceil \frac{B}{p} \right\rceil
+          \left\lceil \frac{F}{n} \right\rceil.
+\end{equation}
+
+When $p$ divides $B$ and $n$ divides $F$,
+\begin{equation}
+    T_{\mathrm{compute}}(p,n)
+    = \frac{R F B G}{pn}
+    = \frac{196608}{pn}.
+\end{equation}
+
+For the main design points:
+\begin{table}[H]
+\centering
+\caption{Ideal compute cycle model per 16-vector batch.}
+\begin{tabular}{rrrrr}
+\toprule
+Architecture & $p$ & $n$ & MAC lanes $m=pn$ & $T_{\mathrm{compute}}$ \\
+\midrule
+1-MAC & 1 & 1 & 1 & 196608 \\
+16-MAC & 4 & 4 & 16 & 12288 \\
+32-MAC & 4 & 8 & 32 & 6144 \\
+64-MAC & 4 & 16 & 64 & 3072 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Non-compute Cycle Components}
+
+The total measured runtime is not only compute cycles. It also includes vector loading, result buffering, output drain, and pipeline overhead.
+
+Dense-vector loading costs
+\begin{equation}
+    T_{\mathrm{vec-load}} = F C = 4096
+\end{equation}
+cycles per batch, assuming one byte per cycle input.
+
+If the output is not pipelined and each result requires request, wait, and send states, then
+\begin{equation}
+    T_{\mathrm{output,old}} = 3 R F = 12288
+\end{equation}
+cycles per batch. With an output read pipeline, after fill, the output can approach
+\begin{equation}
+    T_{\mathrm{output,new}} \approx R F + L_{\mathrm{out}} = 4096 + L_{\mathrm{out}},
+\end{equation}
+where $L_{\mathrm{out}}$ is a small pipeline fill/drain constant.
+
+\subsection{SRAM Area Model}
+
+The measured SRAM macro areas are:
+\begin{align*}
+    A_{256}  &= 20810,\\
+    A_{512}  &= 30948,\\
+    A_{4096} &= 131907.
+\end{align*}
+
+For a true 4-bank BBS matrix layout, matrix storage requires:
+\begin{equation}
+    4 \text{ weight SRAMs} + 4 \text{ position SRAMs} = 8 A_{4096}.
+\end{equation}
+
+For a $4 \times n$ architecture:
+\begin{itemize}[nosep]
+    \item vector buffer requires $4n$ SRAMs of size $256 \times 8$,
+    \item result buffer requires $3n$ SRAMs of size $256 \times 8$ if only one $n$-feature block is buffered,
+    \item bias requires one $256 \times 8$ SRAM.
+\end{itemize}
+
+Therefore,
+\begin{equation}
+    A_{\mathrm{SRAM}}(n) = 8A_{4096} + (1 + 7n)A_{256}.
+\end{equation}
+
+For the main 4-bank designs:
+\begin{table}[H]
+\centering
+\caption{SRAM area model for $4 \times n$ architectures.}
+\begin{tabular}{rrrrr}
+\toprule
+Architecture & $n$ & Vector SRAMs & Result SRAMs & $A_{\mathrm{SRAM}}$ \\
+\midrule
+16-MAC & 4  & 16 & 12 & 1,658,746 \\
+32-MAC & 8  & 32 & 24 & 2,241,426 \\
+64-MAC & 16 & 64 & 48 & 3,406,786 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Area-Time Product Model}
+
+We use
+\begin{equation}
+    AT = A \cdot T
+\end{equation}
+where $A$ is synthesized area and $T$ is measured cycle count or real runtime. If clock periods differ substantially, the more realistic metric is
+\begin{equation}
+    AT_{\mathrm{real}} = A \cdot T_{\mathrm{cycles}} \cdot T_{\mathrm{clk}}.
+\end{equation}
+
+The key trade-off is:
+\begin{itemize}[nosep]
+    \item increasing $pn$ reduces compute cycles,
+    \item increasing $n$ increases vector SRAM and result SRAM area,
+    \item for high parallelism, fixed overheads such as vector loading and output drain limit the benefit of reducing compute cycles.
+\end{itemize}
+
+\section{Practical Optimizations Adopted}
+
+\subsection{True BBS Matrix Banking}
+
+Instead of storing all $12288$ weights across three capacity-based SRAMs, the optimized architecture stores matrix values according to their BBS bank:
+\begin{align*}
+    W_b[r,g] &: b \in \{0,1,2,3\},\\
+    P_b[r,g] &: b \in \{0,1,2,3\}.
+\end{align*}
+Each bank contains $256 \times 12 = 3072$ entries and fits into one $4096 \times 8$ SRAM. The address is
+\begin{equation}
+    \mathrm{addr}(r,g) = 12r + g = 8r + 4r + g.
+\end{equation}
+
+\subsection{64-MAC Vector Banking}
+
+For the 64-MAC design, the vector buffer is organized as:
+\begin{equation}
+    X[f,b,\ell], \quad f \in [0,15],\ b \in [0,3],\ \ell \in [0,63].
+\end{equation}
+Each feature and column bank has its own $256 \times 8$ SRAM. Therefore, the 64-MAC design uses
+\begin{equation}
+    16 \times 4 = 64
+\end{equation}
+vector SRAMs. This gives enough read bandwidth for 64 vector values per compute issue.
+
+\subsection{Result Buffering}
+
+The output is 22-bit signed $S10.11$. It is stored in three byte SRAMs per feature:
+\begin{align*}
+    \mathrm{low}  &= y[7:0],\\
+    \mathrm{mid}  &= y[15:8],\\
+    \mathrm{high} &= \{2'b00, y[21:16]\}.
+\end{align*}
+For 16 features, the 64-MAC design uses
+\begin{equation}
+    16 \times 3 = 48
+\end{equation}
+result SRAMs.
+
+\subsection{Compute Pipeline}
+
+The compute pipeline hides synchronous SRAM latency. A single group bundle has multiple stages:
+\begin{enumerate}[nosep]
+    \item issue four weight/position SRAM reads,
+    \item wait for matrix SRAM output,
+    \item issue 64 vector SRAM reads,
+    \item multiply 64 pairs and reduce four products per feature,
+    \item accumulate 16 partial sums into 16 accumulators.
+\end{enumerate}
+
+The key idea is that the pipeline latency is several cycles, but the issue rate is one group bundle per cycle after fill. Therefore, a row with 12 groups requires roughly
+\begin{equation}
+    12 + L_{\mathrm{pipe}}
+\end{equation}
+cycles, not $12 \times L_{\mathrm{pipe}}$.
+
+\subsection{Optimizations for the 64-MAC Version}
+
+The first 64-MAC implementation used the following expensive sequence:
+\begin{equation*}
+    \text{bias} \rightarrow \text{result SRAM} \rightarrow \text{accumulators} \rightarrow \text{compute} \rightarrow \text{result SRAM} \rightarrow \text{output}.
+\end{equation*}
+Three optimizations were introduced.
+
+\paragraph{Output pipeline.}
+The old output FSM used request, wait, and send states per result. This costs about $3RF=12288$ cycles per batch. The optimized version issues the next result SRAM read every cycle and outputs the result after pipeline latency. This should approach $RF=4096$ cycles per batch.
+
+\paragraph{Accumulator bias initialization.}
+Instead of pre-filling result SRAM with bias and reading it back into accumulators, the optimized version directly initializes accumulators:
+\begin{equation}
+    \mathrm{acc}[f] \leftarrow b[r]_{S10.11}, \quad f=0,1,\ldots,15.
+\end{equation}
+This removes the result-SRAM bias-fill phase and the result-SRAM read-to-accumulator phase.
+
+\paragraph{Bias prefetch.}
+While computing row $r$, the bias for row $r+1$ can be prefetched from the independent bias SRAM. This hides the bias read bubble for the next row.
+
+\section{Experiment Results}
+
+\subsection{Current 64-MAC Baseline Result}
+
+The current synthesized 64-MAC design has the following area distribution:
+
+\begin{table}[H]
+\centering
+\caption{Synthesized area of the current 64-MAC design.}
+\begin{tabular}{lr}
+\toprule
+Component & Area \\
+\midrule
+Total area & 3,729,240.1982 \\
+Combinational area reported at top level & 45,746.6268 \\
+Non-combinational area & 73,721.4777 \\
+Black-box SRAM area & 3,406,774.9355 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The black-box SRAM area dominates:
+\begin{equation}
+    \frac{3,406,774.9355}{3,729,240.1982} \approx 91.35\%.
+\end{equation}
+This confirms that the 64-MAC architecture is memory-area dominated rather than multiplier-area dominated.
+
+The measured runtime for two 16-vector batches is:
+\begin{equation}
+    T_{64,\mathrm{old}} = 45570 \text{ cycles}.
+\end{equation}
+Thus, per 16-vector batch:
+\begin{equation}
+    T_{64,\mathrm{old,batch}} \approx 22785 \text{ cycles}.
+\end{equation}
+
+The corresponding cycle-based area-time product is
+\begin{equation}
+    AT_{64,\mathrm{old}} = 3,729,240.1982 \times 45,570
+    \approx 1.6994 \times 10^{11}.
+\end{equation}
+
+This version was observed to reduce AT by roughly 40\% compared with the original 1-MAC reference. However, the improvement is limited by SRAM area and non-compute cycle overhead.
+
+\subsection{Cycle Breakdown of the Old 64-MAC Version}
+
+The measured per-batch cycle count is almost exactly explained by:
+
+\begin{table}[H]
+\centering
+\caption{Approximate cycle breakdown of the old 64-MAC implementation.}
+\begin{tabular}{lr}
+\toprule
+Phase & Cycles per batch \\
+\midrule
+Read 16 dense vectors & 4096 \\
+Bias-fill result SRAM & $256 \times 3 = 768$ \\
+Row compute and result writeback & $256 \times 22 = 5632$ \\
+Output with REQ/WAIT/SEND & $4096 \times 3 = 12288$ \\
+\midrule
+Total & 22784 \\
+Measured & 22785 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+This shows that output drain is the largest contributor. The ideal 64-MAC compute body is only $3072$ cycles per batch, but the old output path alone consumes $12288$ cycles per batch.
+
+\subsection{Expected Impact of the New 64-MAC Optimizations}
+
+The optimized 64-MAC version targets the following reductions:
+
+\begin{table}[H]
+\centering
+\caption{Expected cycle reductions in optimized 64-MAC implementation.}
+\begin{tabular}{lrr}
+\toprule
+Optimization & Old cost & Expected new cost \\
+\midrule
+Output pipeline & $12288$ & $4096 + L_{\mathrm{out}}$ \\
+Remove bias-fill result SRAM & $768$ & $0$ \\
+Remove result SRAM read-to-acc & included in row overhead & mostly removed \\
+Bias prefetch & row bias bubbles & hidden after first row \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A rough target for two 16-vector batches is:
+\begin{equation}
+    T_{64,\mathrm{opt}} \approx 26000 \sim 30000 \text{ cycles}.
+\end{equation}
+This number should be confirmed by RTL and gate-level simulation.
+
+\section{Discussion: Why 32-MAC Still Matters}
+
+Although the 64-MAC version improves AT, it uses a large amount of SRAM. The 64-MAC design requires 64 vector SRAMs and 48 result SRAMs. Reducing feature parallelism from 16 to 8 gives a 32-MAC design with:
+\begin{align*}
+    \text{vector SRAMs} &= 4 \times 8 = 32,\\
+    \text{result SRAMs} &= 3 \times 8 = 24.
+\end{align*}
+
+The SRAM area decreases from
+\begin{equation}
+    A_{\mathrm{SRAM}}(16) = 3,406,786
+\end{equation}
+to
+\begin{equation}
+    A_{\mathrm{SRAM}}(8) = 2,241,426.
+\end{equation}
+The compute cycles double from 3072 to 6144 per batch, but the total runtime does not double because vector loading and output remain significant. Therefore, the 32-MAC design is a strong candidate for the best AT point.
+
+\section{Conclusion}
+
+The SpMDV problem is governed by two independent parallelism axes:
+\begin{equation}
+    \mathrm{MACs} = \mathrm{matrix\ bank\ parallelism} \times \mathrm{feature\ parallelism}.
+\end{equation}
+
+The matrix side naturally supports four-way parallelism due to BBS. Feature parallelism provides additional throughput but requires significant vector and result SRAM banking. The 64-MAC design demonstrates that aggressive parallelism can reduce AT, but the benefit is limited by SRAM area and output overhead. The synthesis results show that more than 91\% of the 64-MAC area is black-box SRAM, so future improvements should focus on memory architecture and cycle overhead rather than multiplier area.
+
+The immediate next steps are:
+\begin{enumerate}[nosep]
+    \item validate the optimized 64-MAC version with output pipeline, accumulator bias initialization, and bias prefetch;
+    \item synthesize and simulate the 32-MAC $4 \times 8$ architecture;
+    \item compare 1-MAC, 16-MAC, 32-MAC, old 64-MAC, and optimized 64-MAC using area, cycle count, clock period, and AT;
+    \item use gate-level timing results to evaluate whether higher parallelism increases clock period enough to offset cycle reductions.
+\end{enumerate}
+
+The current best interpretation is that 64-MAC is a useful extreme-throughput reference, while 32-MAC is likely the most important design point for area-time efficiency.
+
+\appendix
+\section{Recommended Result Table Template}
+
+After all experiments are complete, fill the following table:
+
+\begin{table}[H]
+\centering
+\caption{Final experiment comparison template.}
+\begin{tabular}{lrrrrrr}
+\toprule
+Version & $p$ & $n$ & MACs & Area & Cycles & AT \\
+\midrule
+1-MAC reference & 1 & 1 & 1 & -- & -- & -- \\
+16-MAC $4\times4$ & 4 & 4 & 16 & -- & -- & -- \\
+32-MAC $4\times8$ & 4 & 8 & 32 & -- & -- & -- \\
+64-MAC old $4\times16$ & 4 & 16 & 64 & 3,729,240 & 45,570 & $1.6994\times10^{11}$ \\
+64-MAC optimized $4\times16$ & 4 & 16 & 64 & -- & -- & -- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Important Implementation Invariants}
+
+All optimized versions should preserve:
+\begin{enumerate}[nosep]
+    \item the original top-level I/O interface;
+    \item the original request/valid protocol;
+    \item the external stream order: weights, positions, biases, then dense vectors;
+    \item all fixed-point formats and sign-extension rules;
+    \item synchronous SRAM latency handling;
+    \item feature-major output order.
+\end{enumerate}
+
+\end{document}
