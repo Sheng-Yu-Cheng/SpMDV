@@ -32,7 +32,7 @@ read_sdf -load_delay net ../SYN/Netlist/SpMDV_syn.sdf
 
 ## ===== Analysis Window =====
 read_vcd  -strip_path testbed/u_SpMDV  ../GATE/SpMDV.fsdb \
-          -time {248370 704070}
+          -time {183794 377134}
 update_power
 report_power
 report_power > SpMDV.power
