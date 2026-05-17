@@ -15,21 +15,11 @@ module SpMDV
     output reg [21:0] o_result,
     output reg o_valid
 );
-    reg bias_chip_enable;
-    reg bias_write_enable;
-    reg [11:0] bias_address;
-    reg [7:0] bias_data;
-    wire [7:0] bias_output;
-
-
-    sram_4096x8 _bias(
-        .CLK(clk),
-        .CEN(~bias_chip_enable),
-        .WEN(~bias_write_enable),
-        .A(bias_address),
-        .D(bias_data),
-        .Q(bias_output)
-    );
+    reg [10:0]a, b;
+    reg [21:0]c;
+    always @(*) begin
+        c = a * b;
+    end
 endmodule
 
 // module SpMDV 
