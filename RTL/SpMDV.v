@@ -17,12 +17,12 @@ module SpMDV
 );
     reg bias_chip_enable;
     reg bias_write_enable;
-    reg [8:0] bias_address;
+    reg [11:0] bias_address;
     reg [7:0] bias_data;
     wire [7:0] bias_output;
 
 
-    sram_512x8 _bias(
+    sram_4096x8 _bias(
         .CLK(clk),
         .CEN(~bias_chip_enable),
         .WEN(~bias_write_enable),
