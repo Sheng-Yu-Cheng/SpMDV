@@ -39,18 +39,20 @@ module SpMDV
     localparam S_LOAD_INIT         = 24'd1;
     localparam S_START_READ_VECTOR = 24'd2;
     localparam S_READ_VECTOR       = 24'd3;
-    localparam S_INIT_RES_READ     = 24'd4;
-    localparam S_INIT_RES_WAIT     = 24'd5;
-    localparam S_INIT_RES_WRITE    = 24'd6;
-    localparam S_ACC_READ          = 24'd7;
-    localparam S_ACC_WAIT          = 24'd8;
-    localparam S_ACC_CAPTURE       = 24'd9;
-    localparam S_COMPUTE_INIT      = 24'd10;
-    localparam S_COMPUTE_ROW       = 24'd11;
-    localparam S_WRITE_RESULT      = 24'd12;
-    localparam S_OUTPUT_REQ        = 24'd13;
-    localparam S_OUTPUT_WAIT       = 24'd14;
-    localparam S_OUTPUT_SEND       = 24'd15;
+
+    // Optimized 64MAC flow:
+    //   - no result-SRAM bias prefill
+    //   - no result-SRAM read-to-acc before every row
+    //   - acc[0..15] are initialized directly from prefetched bias
+    //   - result output is pipelined to one result per cycle after fill
+    localparam S_BIAS_READ         = 24'd4;
+    localparam S_BIAS_WAIT         = 24'd5;
+    localparam S_BIAS_CAPTURE      = 24'd6;
+    localparam S_COMPUTE_INIT      = 24'd7;
+    localparam S_COMPUTE_ROW       = 24'd8;
+    localparam S_WRITE_RESULT      = 24'd9;
+    localparam S_OUTPUT_INIT       = 24'd10;
+    localparam S_OUTPUT_PIPE       = 24'd11;
 
     // ============================================================
     // SRAM ports
@@ -159,9 +161,14 @@ module SpMDV
     // ============================================================
 
     reg [7:0] row;             // 0..255 compute/result row
-    reg [7:0] init_res_row;    // 0..255 for bias -> result SRAM initialization
     reg [7:0] output_row;      // 0..255 output row
     reg [3:0] output_feature;  // 0..15 output feature
+
+    reg [12:0] output_issue_count; // 0..4096, pipelined output read issue count
+    reg [12:0] output_sent_count;  // 0..4096, number of valid outputs sent
+    reg        out_valid_1, out_valid_2;
+    reg [3:0]  out_feature_1, out_feature_2;
+    reg [7:0]  out_row_1, out_row_2;
 
     reg [3:0] group;           // 0..11, for load stream and compute issue
     reg [1:0] bank;            // 0..3, for load stream
@@ -182,7 +189,10 @@ module SpMDV
     reg signed [17:0] partial_sum_pipe[0:15]; // 4 x S4.11 products -> signed 18-bit
     reg signed [21:0] acc[0:15];              // S10.11 accumulators for 16 features
 
-    reg signed [21:0] bias_as_s10_11;
+    reg signed [21:0] current_bias_s10_11;
+    reg signed [21:0] prefetched_bias_s10_11;
+    reg               prefetched_bias_valid;
+    reg               bias_pf_v1, bias_pf_v2;
 
     integer i, f, b;
 
@@ -255,10 +265,16 @@ module SpMDV
             case (state)
                 S_IDLE: begin
                     row <= 8'd0;
-                    init_res_row <= 8'd0;
                     output_row <= 8'd0;
                     output_feature <= 4'd0;
-
+                    output_issue_count <= 13'd0;
+                    output_sent_count <= 13'd0;
+                    out_valid_1 <= 1'b0;
+                    out_valid_2 <= 1'b0;
+                    out_feature_1 <= 4'd0;
+                    out_feature_2 <= 4'd0;
+                    out_row_1 <= 8'd0;
+                    out_row_2 <= 8'd0;
                     bank <= 2'd0;
                     group <= 4'd0;
                     init_count <= 15'd0;
@@ -273,7 +289,11 @@ module SpMDV
                     vec_valid_1 <= 1'b0;
                     vec_valid_2 <= 1'b0;
                     sum_valid <= 1'b0;
-                    bias_as_s10_11 <= 22'sd0;
+                    current_bias_s10_11 <= 22'sd0;
+                    prefetched_bias_s10_11 <= 22'sd0;
+                    prefetched_bias_valid <= 1'b0;
+                    bias_pf_v1 <= 1'b0;
+                    bias_pf_v2 <= 1'b0;
 
                     for (f = 0; f < 16; f = f + 1) begin
                         acc[f] <= 22'sd0;
@@ -342,9 +362,21 @@ module SpMDV
                 // --------------------------------------------------------
                 S_START_READ_VECTOR: begin
                     row <= 8'd0;
-                    init_res_row <= 8'd0;
                     output_row <= 8'd0;
                     output_feature <= 4'd0;
+                    output_issue_count <= 13'd0;
+                    output_sent_count <= 13'd0;
+                    out_valid_1 <= 1'b0;
+                    out_valid_2 <= 1'b0;
+                    out_feature_1 <= 4'd0;
+                    out_feature_2 <= 4'd0;
+                    out_row_1 <= 8'd0;
+                    out_row_2 <= 8'd0;
+                    current_bias_s10_11 <= 22'sd0;
+                    prefetched_bias_s10_11 <= 22'sd0;
+                    prefetched_bias_valid <= 1'b0;
+                    bias_pf_v1 <= 1'b0;
+                    bias_pf_v2 <= 1'b0;
                     load_feature_id <= 4'd0;
                     load_elem_id <= 8'd0;
 `ifdef DEBUG_SPMDV
@@ -370,83 +402,27 @@ module SpMDV
                 end
 
                 // --------------------------------------------------------
-                // Initialize the result SRAMs with bias before computation.
-                // All 16 features get the same bias[row] in S10.11 format.
+                // Initial bias read for row 0.
+                // Later rows use bias prefetch issued during the previous
+                // row's compute pipeline.
                 // --------------------------------------------------------
-                S_INIT_RES_READ: begin
+                S_BIAS_READ: begin
                     bias_chip_enable  <= 1'b1;
                     bias_write_enable <= 1'b0;
-                    bias_address      <= init_res_row;
+                    bias_address      <= row;
                 end
 
-                S_INIT_RES_WAIT: begin
+                S_BIAS_WAIT: begin
                     // Bubble for synchronous bias SRAM read.
                 end
 
-                S_INIT_RES_WRITE: begin
-                    bias_as_s10_11 <= bias_shifted_comb;
-                    for (f = 0; f < 16; f = f + 1) begin
-                        result_chip_enable[f*3 + 0]  <= 1'b1;
-                        result_write_enable[f*3 + 0] <= 1'b1;
-                        result_address[f*3 + 0]      <= init_res_row;
-                        result_data[f*3 + 0]         <= bias_shifted_comb[7:0];
-
-                        result_chip_enable[f*3 + 1]  <= 1'b1;
-                        result_write_enable[f*3 + 1] <= 1'b1;
-                        result_address[f*3 + 1]      <= init_res_row;
-                        result_data[f*3 + 1]         <= bias_shifted_comb[15:8];
-
-                        result_chip_enable[f*3 + 2]  <= 1'b1;
-                        result_write_enable[f*3 + 2] <= 1'b1;
-                        result_address[f*3 + 2]      <= init_res_row;
-                        result_data[f*3 + 2]         <= {2'b00, bias_shifted_comb[21:16]};
-                    end
-
-                    if (init_res_row != 8'd255) begin
-                        init_res_row <= init_res_row + 8'd1;
-                    end else begin
-                        row <= 8'd0;
-                    end
-
+                S_BIAS_CAPTURE: begin
+                    current_bias_s10_11 <= bias_shifted_comb;
+                    prefetched_bias_valid <= 1'b0;
 `ifdef DEBUG_SPMDV
-                    if (init_res_row[5:0] == 6'd0)
-                        $display("[SpMDV64] init result row=%0d bias=%0d shifted=%0d t=%0t",
-                                 init_res_row, $signed(bias_output), bias_shifted_comb, $time);
+                    $display("[SpMDV64_OPT] capture initial/current bias row=%0d bias=%0d shifted=%0d t=%0t",
+                             row, $signed(bias_output), bias_shifted_comb, $time);
 `endif
-                end
-
-                // --------------------------------------------------------
-                // Read row-local result SRAM into 16 accumulators. Since the
-                // result SRAMs were initialized with bias, this preserves the
-                // requested result-SRAM bias initialization semantics while
-                // avoiding a single-port SRAM read-modify-write on every group.
-                // --------------------------------------------------------
-                S_ACC_READ: begin
-                    for (f = 0; f < 16; f = f + 1) begin
-                        result_chip_enable[f*3 + 0] <= 1'b1;
-                        result_write_enable[f*3 + 0] <= 1'b0;
-                        result_address[f*3 + 0] <= row;
-
-                        result_chip_enable[f*3 + 1] <= 1'b1;
-                        result_write_enable[f*3 + 1] <= 1'b0;
-                        result_address[f*3 + 1] <= row;
-
-                        result_chip_enable[f*3 + 2] <= 1'b1;
-                        result_write_enable[f*3 + 2] <= 1'b0;
-                        result_address[f*3 + 2] <= row;
-                    end
-                end
-
-                S_ACC_WAIT: begin
-                    // Bubble for synchronous result SRAM read.
-                end
-
-                S_ACC_CAPTURE: begin
-                    for (f = 0; f < 16; f = f + 1) begin
-                        acc[f] <= $signed({result_output[f*3 + 2][5:0],
-                                           result_output[f*3 + 1],
-                                           result_output[f*3 + 0]});
-                    end
                 end
 
                 S_COMPUTE_INIT: begin
@@ -457,7 +433,14 @@ module SpMDV
                     vec_valid_1 <= 1'b0;
                     vec_valid_2 <= 1'b0;
                     sum_valid <= 1'b0;
+                    bias_pf_v1 <= 1'b0;
+                    bias_pf_v2 <= 1'b0;
+                    prefetched_bias_valid <= 1'b0;
                     for (f = 0; f < 16; f = f + 1) begin
+                        // Direct bias initialization: S0.7 bias has already
+                        // been converted to S10.11 in current_bias_s10_11.
+                        // This replaces result-SRAM bias prefill + result read.
+                        acc[f] <= current_bias_s10_11;
                         partial_sum_pipe[f] <= 18'sd0;
                     end
                     for (b = 0; b < 4; b = b + 1) begin
@@ -478,6 +461,29 @@ module SpMDV
                 // Stage 4: accumulate 16 partial sums into acc[0..15].
                 // --------------------------------------------------------
                 S_COMPUTE_ROW: begin
+                    // Bias prefetch pipeline for the next row.  Bias SRAM is
+                    // independent of matrix/vector/result SRAMs, so this can
+                    // be overlapped with the current row compute.
+                    if (bias_pf_v2) begin
+                        prefetched_bias_s10_11 <= bias_shifted_comb;
+                        prefetched_bias_valid  <= 1'b1;
+`ifdef DEBUG_SPMDV
+                        if (row[5:0] == 6'd0)
+                            $display("[SpMDV64_OPT] prefetched bias for row=%0d shifted=%0d t=%0t",
+                                     row + 8'd1, bias_shifted_comb, $time);
+`endif
+                    end
+                    bias_pf_v2 <= bias_pf_v1;
+                    bias_pf_v1 <= 1'b0;
+
+                    // Issue the next-row bias read early in the current row.
+                    if (issue_group == 4'd0 && row != 8'd255) begin
+                        bias_chip_enable  <= 1'b1;
+                        bias_write_enable <= 1'b0;
+                        bias_address      <= row + 8'd1;
+                        bias_pf_v1        <= 1'b1;
+                    end
+
                     // Stage 4: accumulate one group bundle into all features.
                     if (sum_valid) begin
                         for (f = 0; f < 16; f = f + 1) begin
@@ -568,60 +574,92 @@ module SpMDV
 
                     if (row != 8'd255) begin
                         row <= row + 8'd1;
+                        // Use the bias prefetched during this row's compute
+                        // as the direct accumulator initial value for next row.
+                        current_bias_s10_11 <= prefetched_bias_s10_11;
                     end else begin
                         output_feature <= 4'd0;
                         output_row <= 8'd0;
+                        output_issue_count <= 13'd0;
+                        output_sent_count <= 13'd0;
+                        out_valid_1 <= 1'b0;
+                        out_valid_2 <= 1'b0;
                     end
                 end
 
                 // --------------------------------------------------------
                 // Output order: feature0 row0..255, feature1 row0..255, ...
-                // Read three result bytes, wait one bubble, then emit o_valid.
+                // Pipelined result SRAM reads: after initial fill, this emits
+                // one o_valid result per cycle instead of request/wait/send.
                 // --------------------------------------------------------
-                S_OUTPUT_REQ: begin
-                    result_chip_enable[output_feature*3 + 0] <= 1'b1;
-                    result_write_enable[output_feature*3 + 0] <= 1'b0;
-                    result_address[output_feature*3 + 0] <= output_row;
-
-                    result_chip_enable[output_feature*3 + 1] <= 1'b1;
-                    result_write_enable[output_feature*3 + 1] <= 1'b0;
-                    result_address[output_feature*3 + 1] <= output_row;
-
-                    result_chip_enable[output_feature*3 + 2] <= 1'b1;
-                    result_write_enable[output_feature*3 + 2] <= 1'b0;
-                    result_address[output_feature*3 + 2] <= output_row;
+                S_OUTPUT_INIT: begin
+                    output_feature <= 4'd0;
+                    output_row <= 8'd0;
+                    output_issue_count <= 13'd0;
+                    output_sent_count <= 13'd0;
+                    out_valid_1 <= 1'b0;
+                    out_valid_2 <= 1'b0;
+                    out_feature_1 <= 4'd0;
+                    out_feature_2 <= 4'd0;
+                    out_row_1 <= 8'd0;
+                    out_row_2 <= 8'd0;
+`ifdef DEBUG_SPMDV
+                    $display("[SpMDV64_OPT] start pipelined output at t=%0t", $time);
+`endif
                 end
 
-                S_OUTPUT_WAIT: begin
-                    // Bubble for synchronous result SRAM read.
-                end
-
-                S_OUTPUT_SEND: begin
-                    o_result <= {result_output[output_feature*3 + 2][5:0],
-                                 result_output[output_feature*3 + 1],
-                                 result_output[output_feature*3 + 0]};
-                    o_valid <= 1'b1;
+                S_OUTPUT_PIPE: begin
+                    // Emit data for the read issued two cycles ago.
+                    if (out_valid_2) begin
+                        o_result <= {result_output[out_feature_2*3 + 2][5:0],
+                                     result_output[out_feature_2*3 + 1],
+                                     result_output[out_feature_2*3 + 0]};
+                        o_valid <= 1'b1;
+                        output_sent_count <= output_sent_count + 13'd1;
 
 `ifdef DEBUG_SPMDV
-                    if ((output_row[7:0] == 8'd0) || (output_row[7:0] == 8'd255))
-                        $strobe("[SpMDV64] output f=%0d row=%0d result=%0d raw=%h t=%0t",
-                                output_feature, output_row,
-                                $signed({result_output[output_feature*3 + 2][5:0],
-                                         result_output[output_feature*3 + 1],
-                                         result_output[output_feature*3 + 0]}),
-                                {result_output[output_feature*3 + 2][5:0],
-                                 result_output[output_feature*3 + 1],
-                                 result_output[output_feature*3 + 0]},
-                                $time);
+                        if ((out_row_2 == 8'd0) || (out_row_2 == 8'd255))
+                            $strobe("[SpMDV64_OPT] output f=%0d row=%0d result=%0d raw=%h t=%0t",
+                                    out_feature_2, out_row_2,
+                                    $signed({result_output[out_feature_2*3 + 2][5:0],
+                                             result_output[out_feature_2*3 + 1],
+                                             result_output[out_feature_2*3 + 0]}),
+                                    {result_output[out_feature_2*3 + 2][5:0],
+                                     result_output[out_feature_2*3 + 1],
+                                     result_output[out_feature_2*3 + 0]},
+                                    $time);
 `endif
+                    end
 
-                    if (output_row != 8'd255) begin
-                        output_row <= output_row + 8'd1;
+                    // Shift output-read metadata pipeline.
+                    out_valid_2   <= out_valid_1;
+                    out_feature_2 <= out_feature_1;
+                    out_row_2     <= out_row_1;
+
+                    // Issue next result read if any remain.
+                    if (output_issue_count < 13'd4096) begin
+                        output_feature <= output_issue_count[11:8];
+                        output_row     <= output_issue_count[7:0];
+
+                        result_chip_enable[output_issue_count[11:8]*3 + 0] <= 1'b1;
+                        result_write_enable[output_issue_count[11:8]*3 + 0] <= 1'b0;
+                        result_address[output_issue_count[11:8]*3 + 0] <= output_issue_count[7:0];
+
+                        result_chip_enable[output_issue_count[11:8]*3 + 1] <= 1'b1;
+                        result_write_enable[output_issue_count[11:8]*3 + 1] <= 1'b0;
+                        result_address[output_issue_count[11:8]*3 + 1] <= output_issue_count[7:0];
+
+                        result_chip_enable[output_issue_count[11:8]*3 + 2] <= 1'b1;
+                        result_write_enable[output_issue_count[11:8]*3 + 2] <= 1'b0;
+                        result_address[output_issue_count[11:8]*3 + 2] <= output_issue_count[7:0];
+
+                        out_valid_1   <= 1'b1;
+                        out_feature_1 <= output_issue_count[11:8];
+                        out_row_1     <= output_issue_count[7:0];
+
+                        output_issue_count <= output_issue_count + 13'd1;
                     end else begin
-                        output_row <= 8'd0;
-                        if (output_feature != 4'd15) begin
-                            output_feature <= output_feature + 4'd1;
-                        end
+                        out_valid_1 <= 1'b0;
                     end
                 end
             endcase
@@ -650,27 +688,15 @@ module SpMDV
 
             S_READ_VECTOR:
                 if (raw_data_valid && load_feature_id == 4'd15 && load_elem_id == 8'd255)
-                    next_state = S_INIT_RES_READ;
+                    next_state = S_BIAS_READ;
 
-            S_INIT_RES_READ:
-                next_state = S_INIT_RES_WAIT;
+            S_BIAS_READ:
+                next_state = S_BIAS_WAIT;
 
-            S_INIT_RES_WAIT:
-                next_state = S_INIT_RES_WRITE;
+            S_BIAS_WAIT:
+                next_state = S_BIAS_CAPTURE;
 
-            S_INIT_RES_WRITE:
-                if (init_res_row == 8'd255)
-                    next_state = S_ACC_READ;
-                else
-                    next_state = S_INIT_RES_READ;
-
-            S_ACC_READ:
-                next_state = S_ACC_WAIT;
-
-            S_ACC_WAIT:
-                next_state = S_ACC_CAPTURE;
-
-            S_ACC_CAPTURE:
+            S_BIAS_CAPTURE:
                 next_state = S_COMPUTE_INIT;
 
             S_COMPUTE_INIT:
@@ -684,21 +710,18 @@ module SpMDV
 
             S_WRITE_RESULT:
                 if (row == 8'd255)
-                    next_state = S_OUTPUT_REQ;
+                    next_state = S_OUTPUT_INIT;
                 else
-                    next_state = S_ACC_READ;
+                    next_state = S_COMPUTE_INIT;
 
-            S_OUTPUT_REQ:
-                next_state = S_OUTPUT_WAIT;
+            S_OUTPUT_INIT:
+                next_state = S_OUTPUT_PIPE;
 
-            S_OUTPUT_WAIT:
-                next_state = S_OUTPUT_SEND;
-
-            S_OUTPUT_SEND:
-                if (output_row == 8'd255 && output_feature == 4'd15)
+            S_OUTPUT_PIPE:
+                if (output_sent_count == 13'd4096)
                     next_state = S_START_READ_VECTOR;
                 else
-                    next_state = S_OUTPUT_REQ;
+                    next_state = S_OUTPUT_PIPE;
 
             default:
                 next_state = S_IDLE;
